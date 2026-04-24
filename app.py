@@ -1,96 +1,305 @@
-import streamlit as st
+from __future__ import annotations
+
+from dataclasses import asdict, replace
+
 import matplotlib.pyplot as plt
-import pandas as pd
+import matplotlib.patches as mpatches
 import numpy as np
-from dataclasses import replace
+import pandas as pd
+import streamlit as st
 
 from tco_model import (
-    SharedInputs,
-    DieselInputs,
     BETCInputs,
     BETSInputs,
-    run_model,
+    DieselInputs,
+    SharedInputs,
     extract_tco_gaps,
-    run_tco_projection,
-    run_projection_monte_carlo,
-    summarize_projection_uncertainty,
-    run_margin_sweep_with_uncertainty,
-    run_monte_carlo_simulation,
-    summarize_monte_carlo_results,
     get_drivers_of_gap,
     get_pretty_label,
+    get_uncertainty_specs,
     run_independent_variable_monte_carlo,
+    run_margin_sweep_with_uncertainty,
+    run_model,
+    run_monte_carlo_simulation,
+    run_projection_monte_carlo,
+    run_tco_projection,
     summarize_independent_effect_spread,
+    summarize_monte_carlo_results,
+    summarize_projection_uncertainty,
+)
+
+st.set_page_config(page_title="Truck TCO Analysis", layout="wide")
+
+
+# -------------------------------
+# Styling
+# -------------------------------
+st.markdown(
+    """
+    <style>
+    .block-container {padding-top: 1.8rem; padding-bottom: 3rem;}
+    div[data-testid="stMetric"] {
+        background-color: #f8fafc;
+        border: 1px solid #e5e7eb;
+        padding: 14px 16px;
+        border-radius: 16px;
+    }
+    .section-card {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 18px;
+        padding: 1.1rem 1.2rem;
+        margin: 0.8rem 0 1rem 0;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 
-st.set_page_config(page_title="Truck TCO App", layout="wide")
+# -------------------------------
+# Helpers
+# -------------------------------
+def fmt_gbp(value: float, decimals: int = 0) -> str:
+    return f"£{value:,.{decimals}f}"
 
 
-# -------------------------------
-# Plot helpers for Streamlit
-# -------------------------------
+def uncertainty_table(shared, diesel, betc, bets) -> pd.DataFrame:
+    rows = []
+    for spec in get_uncertainty_specs(shared, diesel, betc, bets):
+        mode = spec["mode"]
+
+        if spec["variable"] == "discount_rate":
+            mode = shared.discount_rate
+        elif spec["variable"] == "full_loaded_km_per_day":
+            mode = shared.full_loaded_km_per_day
+        elif spec["variable"] == "peak_price_per_kwh":
+            mode = shared.peak_price_per_kwh
+        elif spec["variable"] == "off_peak_share":
+            mode = shared.off_peak_share
+        elif spec["variable"] == "bet_depot_energy_price_per_kwh":
+            mode = shared.bet_depot_energy_price_per_kwh
+        elif spec["variable"] == "bet_public_energy_price_per_kwh":
+            mode = shared.bet_public_energy_price_per_kwh
+        elif spec["variable"] == "bet_subsidy":
+            mode = shared.bet_subsidy
+        elif spec["variable"] == "full_loaded_kwh_per_km_year1":
+            mode = betc.full_loaded_kwh_per_km_year1
+        elif spec["variable"] == "glider_capex":
+            mode = betc.glider_capex
+        elif spec["variable"] == "battery_price_per_kwh":
+            mode = betc.battery_price_per_kwh
+        elif spec["variable"] == "battery_lifetime_cycles":
+            mode = betc.battery_lifetime_cycles
+        elif spec["variable"] == "battery_capacity_kwh":
+            mode = betc.battery_capacity_kwh
+        elif spec["variable"] == "battery_recycle_ratio":
+            mode = betc.battery_recycle_ratio
+
+        rows.append(
+            {
+                "Variable": get_pretty_label(spec["variable"]),
+                "Min": spec["left"],
+                "Mode": mode,
+                "Max": spec["right"],
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
 def fig_tco_comparison(results):
     labels = ["Diesel", "BET-C", "BET-S"]
     values = [
-        results["diesel"]["tco_5y_discounted"],
-        results["bet_c"]["tco_5y_discounted_recycle"],
-        results["bet_s"]["tco_5y_discounted_recycle"],
+        results["diesel"]["tco_discounted"],
+        results["bet_c"]["tco_discounted_recycle"],
+        results["bet_s"]["tco_discounted_recycle"],
     ]
-
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    bars = ax.bar(labels, values)
-    ax.set_title("5-Year Discounted TCO Comparison")
+    fig, ax = plt.subplots(figsize=(7.5, 4.6))
+    bars = ax.bar(labels, values, color=["tab:blue", "tab:orange", "tab:green"])
+    ax.set_title("5-year discounted TCO comparison")
     ax.set_ylabel("TCO (£)")
-    ax.set_xlabel("Truck Type")
-
     for bar, value in zip(bars, values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            value,
-            f"{value:,.0f}",
-            ha="center",
-            va="bottom",
-        )
-
+        ax.text(bar.get_x() + bar.get_width() / 2, value, f"{value:,.0f}", ha="center", va="bottom", fontsize=9)
     fig.tight_layout()
     return fig
 
 
 def fig_tco_gap(gaps):
     labels = ["BET-C - Diesel", "BET-S - Diesel", "BET-S - BET-C"]
-    values = [
-        gaps["bet_c_vs_diesel"],
-        gaps["bet_s_vs_diesel"],
-        gaps["bet_s_vs_bet_c"],
-    ]
-
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    bars = ax.bar(labels, values)
-    ax.set_title("TCO Gaps")
-    ax.set_ylabel("Difference (£)")
-    ax.set_xlabel("Comparison")
-    ax.axhline(0, linewidth=1)
-
+    values = [gaps["bet_c_vs_diesel"], gaps["bet_s_vs_diesel"], gaps["bet_s_vs_bet_c"]]
+    fig, ax = plt.subplots(figsize=(7.5, 4.6))
+    bars = ax.bar(labels, values, color=["tab:purple", "tab:red", "tab:brown"])
+    ax.axhline(0, color="black", linewidth=1)
+    ax.set_title("5-year discounted TCO gaps")
+    ax.set_ylabel("TCO gap (£)")
+    ax.tick_params(axis="x", rotation=15)
     for bar, value in zip(bars, values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            value,
-            f"{value:,.0f}",
-            ha="center",
-            va="bottom" if value >= 0 else "top",
-        )
-
+        ax.text(bar.get_x() + bar.get_width() / 2, value, f"{value:,.0f}", ha="center", va="bottom" if value >= 0 else "top", fontsize=9)
     fig.tight_layout()
     return fig
 
 
-def fig_projection(df, ycols, labels, title, ylabel):
-    fig, ax = plt.subplots(figsize=(9, 5.5))
+def fig_monte_carlo_histograms(df: pd.DataFrame):
+    specs = [
+        ("diesel_tco", "Diesel discounted TCO", "TCO (£)", "tab:blue"),
+        ("bet_c_tco", "BET-C discounted TCO", "TCO (£)", "tab:orange"),
+        ("bet_s_tco", "BET-S discounted TCO", "TCO (£)", "tab:green"),
+        ("gap_bet_c_diesel", "BET-C - Diesel Gap", "TCO gap (£)", "tab:purple"),
+        ("gap_bet_s_diesel", "BET-S - Diesel Gap", "TCO gap (£)", "tab:red"),
+        ("gap_bet_s_bet_c", "BET-S - BET-C Gap", "TCO gap (£)", "tab:brown"),
+    ]
+    fig, axes = plt.subplots(2, 3, figsize=(18, 8.5))
+    for ax, (col, title, xlabel, color) in zip(axes.flatten(), specs):
+        ax.hist(df[col].dropna(), bins=20, color=color, alpha=0.82)
+        mean_value = df[col].mean()
+        ax.axvline(df[col].mean(), color="black", linestyle="--", linewidth=1.2, label="Mean")
+        ax.text(mean_value,ax.get_ylim()[1] * 0.9,f"Mean = {mean_value:,.0f}",va="top",ha="right")
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("Frequency")
+        ax.legend(fontsize=8)
+    fig.suptitle("Monte Carlo distributions", fontsize=16, y=1.02)
+    fig.tight_layout()
+    return fig
+
+
+def fig_driver_bar(driver_df: pd.DataFrame, gap_name="BET-S - Diesel"):
+    labels = [get_pretty_label(v) for v in driver_df["variable"]]
+    values = driver_df["correlation_with_gap"]
+    fig, ax = plt.subplots(figsize=(11, 5.8))
+    colors = ["tab:red" if v >= 0 else "tab:blue" for v in values]
+    bars = ax.bar(labels, values, color=colors, alpha=0.82)
+    ax.axhline(0, color="black", linewidth=1)
+    ax.set_title(f"Drivers of {gap_name} gap")
+    ax.set_ylabel("Correlation with the gap")
+    ax.tick_params(axis="x", rotation=30)
+    for label in ax.get_xticklabels():
+        label.set_ha("right")
+    for bar, value in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width() / 2, value, f"{value:.2f}", ha="center", va="bottom" if value >= 0 else "top", fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def _independent_variable_order(df: pd.DataFrame, exclude: list[str] | None = None) -> list[str]:
+    exclude = exclude or []
+    return [v for v in df["variable"].drop_duplicates() if v not in exclude]
+
+
+def fig_independent_tco_boxplots(df: pd.DataFrame):
+    variable_order = _independent_variable_order(df)
+    positions, data, centers, boundaries = [], [], [], []
+    gap_between_groups = 2.0
+    for g, var in enumerate(variable_order):
+        base = 1.0 + g * (3 + gap_between_groups)
+        data.extend([
+            df.loc[df["variable"] == var, "diesel_tco"].dropna(),
+            df.loc[df["variable"] == var, "bet_c_tco"].dropna(),
+            df.loc[df["variable"] == var, "bet_s_tco"].dropna(),
+        ])
+        positions.extend([base, base + 1, base + 2])
+        centers.append(base + 1)
+        if g < len(variable_order) - 1:
+            next_base = 1.0 + (g + 1) * (3 + gap_between_groups)
+            boundaries.append((base + 2 + next_base) / 2)
+
+    fig, ax = plt.subplots(figsize=(20, 6.2))
+    bp = ax.boxplot(data, positions=positions, widths=0.6, patch_artist=True, showfliers=False)
+    colors = (["tab:blue", "tab:orange", "tab:green"] * len(variable_order))
+    for patch, color in zip(bp["boxes"], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.72)
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(1.7)
+    for x in boundaries:
+        ax.axvline(x=x, linestyle="--", linewidth=0.8, color="gray", alpha=0.5)
+    ax.set_xticks(centers)
+    ax.set_xticklabels([get_pretty_label(v) for v in variable_order], rotation=35, ha="right")
+    ax.set_ylabel("Discounted TCO (£)")
+    ax.set_title("Independent one-at-a-time effect on TCO")
+    ax.legend(handles=[
+        mpatches.Patch(color="tab:blue", label="Diesel"),
+        mpatches.Patch(color="tab:orange", label="BET-C"),
+        mpatches.Patch(color="tab:green", label="BET-S"),
+    ], loc="upper right")
+    fig.tight_layout()
+    return fig
+
+
+def fig_independent_gap_boxplots(df: pd.DataFrame):
+    variable_order = _independent_variable_order(df)
+    positions, data, centers, boundaries = [], [], [], []
+    gap_between_groups = 2.0
+    for g, var in enumerate(variable_order):
+        base = 1.0 + g * (3 + gap_between_groups)
+        data.extend([
+            df.loc[df["variable"] == var, "gap_bet_c_diesel"].dropna(),
+            df.loc[df["variable"] == var, "gap_bet_s_diesel"].dropna(),
+            df.loc[df["variable"] == var, "gap_bet_s_bet_c"].dropna(),
+        ])
+        positions.extend([base, base + 1, base + 2])
+        centers.append(base + 1)
+        if g < len(variable_order) - 1:
+            next_base = 1.0 + (g + 1) * (3 + gap_between_groups)
+            boundaries.append((base + 2 + next_base) / 2)
+
+    fig, ax = plt.subplots(figsize=(20, 6.2))
+    bp = ax.boxplot(data, positions=positions, widths=0.6, patch_artist=True, showfliers=False)
+    colors = (["tab:purple", "tab:red", "tab:brown"] * len(variable_order))
+    for patch, color in zip(bp["boxes"], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.72)
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(1.7)
+    for x in boundaries:
+        ax.axvline(x=x, linestyle="--", linewidth=0.8, color="gray", alpha=0.5)
+    ax.axhline(0, color="black", linewidth=1)
+    ax.set_xticks(centers)
+    ax.set_xticklabels([get_pretty_label(v) for v in variable_order], rotation=35, ha="right")
+    ax.set_ylabel("TCO gap (£)")
+    ax.set_title("Independent one-at-a-time effect on TCO gaps")
+    ax.legend(handles=[
+        mpatches.Patch(color="tab:purple", label="BET-C - Diesel"),
+        mpatches.Patch(color="tab:red", label="BET-S - Diesel"),
+        mpatches.Patch(color="tab:brown", label="BET-S - BET-C"),
+    ], loc="upper right")
+    fig.tight_layout()
+    return fig
+
+
+def fig_independent_bets_vs_diesel_boxplot(df: pd.DataFrame):
+    variable_order = _independent_variable_order(
+        df,
+        exclude=["bet_depot_energy_price_per_kwh", "bet_public_energy_price_per_kwh", "battery_capacity_kwh"],
+    )
+    data = [df.loc[df["variable"] == var, "gap_bet_s_diesel"].dropna() for var in variable_order]
+    positions = list(range(1, len(variable_order) + 1))
+    fig, ax = plt.subplots(figsize=(18, 5.8))
+    bp = ax.boxplot(data, positions=positions, widths=0.6, patch_artist=True, showfliers=False)
+    for patch in bp["boxes"]:
+        patch.set_facecolor("tab:red")
+        patch.set_alpha(0.75)
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(1.7)
+    ax.axhline(0, color="black", linewidth=1)
+    ax.set_xticks(positions)
+    ax.set_xticklabels([get_pretty_label(v) for v in variable_order], rotation=35, ha="right")
+    ax.set_ylabel("BET-S - Diesel TCO gap (£)")
+    ax.set_title("Independent one-at-a-time effect on BET-S - Diesel gap")
+    fig.tight_layout()
+    return fig
+
+
+def fig_projection(df: pd.DataFrame, ycols: list[str], labels: list[str], title: str, ylabel: str):
+    fig, ax = plt.subplots(figsize=(10, 5.2))
     for col, label in zip(ycols, labels):
-        ax.plot(df["year"], df[col], marker="o", label=label)
+        ax.plot(df["year"], df[col], marker="o", linewidth=2, label=label)
     ax.set_title(title)
-    ax.set_xlabel("Purchase Year")
+    ax.set_xlabel("Purchase year")
     ax.set_ylabel(ylabel)
     ax.set_xticks(df["year"])
     ax.tick_params(axis="x", rotation=45)
@@ -99,25 +308,16 @@ def fig_projection(df, ycols, labels, title, ylabel):
     return fig
 
 
-def fig_projection_uncertainty(summary_df):
-    specs = [
-        ("diesel_tco_5y_discounted", "Diesel"),
-        ("betc_tco_5y_discounted", "BET-C"),
-        ("bets_tco_5y_discounted", "BET-S"),
-    ]
-
-    fig, ax = plt.subplots(figsize=(9, 5.5))
-    for metric, label in specs:
-        years = summary_df["year"]
-        p5 = summary_df[f"{metric}_p5"]
-        p50 = summary_df[f"{metric}_p50"]
-        p95 = summary_df[f"{metric}_p95"]
-        ax.plot(years, p50, marker="o", label=f"{label} median")
-        ax.fill_between(years, p5, p95, alpha=0.2)
-
-    ax.set_title("Projected 5-Year Discounted TCO with Uncertainty Bands")
-    ax.set_xlabel("Purchase Year")
-    ax.set_ylabel("5-Year Discounted TCO (£)")
+def fig_projection_uncertainty(summary_df: pd.DataFrame, metric_base: str, title: str, ylabel: str):
+    specs = [("diesel", "Diesel"), ("betc", "BET-C"), ("bets", "BET-S")]
+    fig, ax = plt.subplots(figsize=(10, 5.4))
+    for prefix, label in specs:
+        metric = f"{prefix}_{metric_base}"
+        ax.plot(summary_df["year"], summary_df[f"{metric}_p50"], marker="o", linewidth=2, label=f"{label} median")
+        ax.fill_between(summary_df["year"], summary_df[f"{metric}_p5"], summary_df[f"{metric}_p95"], alpha=0.18)
+    ax.set_title(title)
+    ax.set_xlabel("Purchase year")
+    ax.set_ylabel(ylabel)
     ax.set_xticks(summary_df["year"])
     ax.tick_params(axis="x", rotation=45)
     ax.legend()
@@ -125,7 +325,7 @@ def fig_projection_uncertainty(summary_df):
     return fig
 
 
-def summarize_margin_uncertainty(df):
+def summarize_margin_uncertainty(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for margin, group in df.groupby("asset_manager_margin"):
         rows.append(
@@ -145,71 +345,17 @@ def summarize_margin_uncertainty(df):
     return pd.DataFrame(rows).sort_values("asset_manager_margin").reset_index(drop=True)
 
 
-def fig_margin_cost(summary_df):
+def fig_margin_cost(summary_df: pd.DataFrame):
     x = summary_df["asset_manager_margin"] * 100
-    fig, ax = plt.subplots(figsize=(9, 5.5))
-    ax.plot(x, summary_df["diesel_p50"], marker="o", label="Diesel own TCO per km (median)")
-    ax.fill_between(x, summary_df["diesel_p5"], summary_df["diesel_p95"], alpha=0.2)
-    ax.plot(x, summary_df["bets_p50"], marker="o", label="BET-S AEaaS per km (median)")
-    ax.fill_between(x, summary_df["bets_p5"], summary_df["bets_p95"], alpha=0.2)
+    fig, ax = plt.subplots(figsize=(10, 5.4))
+    ax.plot(x, summary_df["diesel_p50"], marker="o", linewidth=2, label="Diesel Truck TCO per km")
+    ax.fill_between(x, summary_df["diesel_p5"], summary_df["diesel_p95"], alpha=0.18)
+    ax.plot(x, summary_df["bets_p50"], marker="o", color="tab:green", linewidth=2, label="BET-S AEaaS Cost per km")
+    ax.fill_between(x, summary_df["bets_p5"], summary_df["bets_p95"],color="tab:green", alpha=0.18)
+    ax.set_title("AEaaS margin and freight cost per km")
     ax.set_xlabel("Asset-manager margin (%)")
     ax.set_ylabel("Cost (£/km)")
-    ax.set_title("Effect of Asset-manager Margin on Freight Cost per km")
     ax.legend()
-    fig.tight_layout()
-    return fig
-
-
-def fig_margin_gap(summary_df):
-    x = summary_df["asset_manager_margin"] * 100
-    fig, ax = plt.subplots(figsize=(9, 5.5))
-    ax.plot(x, summary_df["gap_p50"], marker="o", label="BET-S AEaaS - Diesel (median)")
-    ax.fill_between(x, summary_df["gap_p5"], summary_df["gap_p95"], alpha=0.2)
-    ax.axhline(0, linewidth=1)
-    ax.set_xlabel("Asset-manager margin (%)")
-    ax.set_ylabel("Cost Gap (£/km)")
-    ax.set_title("Effect of Asset-manager Margin on BET-S AEaaS - Diesel Gap")
-    ax.legend()
-    fig.tight_layout()
-    return fig
-
-
-def fig_driver_bar(driver_df, gap_name="BET-S - Diesel"):
-    labels = [get_pretty_label(v) for v in driver_df["variable"]]
-    values = driver_df["correlation_with_gap"]
-    fig, ax = plt.subplots(figsize=(9, 5.5))
-    bars = ax.bar(labels, values)
-    ax.axhline(0, linewidth=1)
-    ax.set_title(f"Drivers of {gap_name}")
-    ax.set_xlabel("Input variable")
-    ax.set_ylabel("Correlation with gap")
-    ax.tick_params(axis="x", rotation=30)
-    for bar, value in zip(bars, values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            value,
-            f"{value:.2f}",
-            ha="center",
-            va="bottom" if value >= 0 else "top",
-        )
-    fig.tight_layout()
-    return fig
-
-
-def fig_independent_bets_vs_diesel_boxplot(df):
-    variable_order = list(df["variable"].drop_duplicates())
-    data = [df.loc[df["variable"] == var, "gap_bet_s_diesel"].dropna() for var in variable_order]
-    positions = list(range(1, len(variable_order) + 1))
-
-    fig, ax = plt.subplots(figsize=(14, 5.5))
-    bp = ax.boxplot(data, positions=positions, widths=0.6, patch_artist=True, showfliers=False)
-    for patch in bp["boxes"]:
-        patch.set_facecolor("lightgray")
-    ax.set_xticks(positions)
-    ax.set_xticklabels([get_pretty_label(v) for v in variable_order], rotation=35, ha="right")
-    ax.set_ylabel("BET-S - Diesel TCO Gap (£)")
-    ax.set_title("Independent effect of each uncertain variable on BET-S - Diesel gap")
-    ax.axhline(0, linewidth=1)
     fig.tight_layout()
     return fig
 
@@ -219,102 +365,146 @@ def fig_independent_bets_vs_diesel_boxplot(df):
 # -------------------------------
 @st.cache_data(show_spinner=False)
 def run_baseline_cached(shared_dict, diesel_dict, betc_dict, bets_dict, asset_manager_margin):
-    shared = SharedInputs(**shared_dict)
-    diesel = DieselInputs(**diesel_dict)
-    betc = BETCInputs(**betc_dict)
-    bets = BETSInputs(**bets_dict)
-    results = run_model(shared=shared, diesel_inp=diesel, betc_inp=betc, bets_inp=bets, asset_manager_margin=asset_manager_margin)
-    gaps = extract_tco_gaps(results)
-    return results, gaps
+    return run_model(
+        shared=SharedInputs(**shared_dict),
+        diesel_inp=DieselInputs(**diesel_dict),
+        betc_inp=BETCInputs(**betc_dict),
+        bets_inp=BETSInputs(**bets_dict),
+        asset_manager_margin=asset_manager_margin,
+    )
 
 
 @st.cache_data(show_spinner=False)
-def run_projection_cached(shared_dict, diesel_dict, betc_dict, bets_dict, start_year, end_year):
+def run_mc_cached(n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_dict, bets_dict):
     shared = SharedInputs(**shared_dict)
     diesel = DieselInputs(**diesel_dict)
     betc = BETCInputs(**betc_dict)
     bets = BETSInputs(**bets_dict)
-    return run_tco_projection(
-        start_year=start_year,
-        end_year=end_year,
+    mc_df = run_monte_carlo_simulation(
+        n_runs=n_runs,
+        random_seed=random_seed,
         shared=shared,
         diesel_inp=diesel,
         betc_inp=betc,
         bets_inp=bets,
     )
-
-
-@st.cache_data(show_spinner=False)
-def run_projection_mc_cached(start_year, end_year, n_runs, random_seed):
-    df = run_projection_monte_carlo(
-        start_year=start_year,
-        end_year=end_year,
-        n_runs=n_runs,
-        random_seed=random_seed,
-    )
-    summary = summarize_projection_uncertainty(
-        df,
-        metric_cols=[
-            "diesel_tco_5y_discounted",
-            "betc_tco_5y_discounted",
-            "bets_tco_5y_discounted",
-        ],
-    )
-    return df, summary
-
-
-@st.cache_data(show_spinner=False)
-def run_margin_mc_cached(margins_tuple, n_runs, random_seed):
-    df = run_margin_sweep_with_uncertainty(
-        margins=np.array(margins_tuple),
-        n_runs=n_runs,
-        random_seed=random_seed,
-    )
-    return df, summarize_margin_uncertainty(df)
-
-
-@st.cache_data(show_spinner=False)
-def run_mc_cached(n_runs, random_seed):
-    mc_df = run_monte_carlo_simulation(n_runs=n_runs, random_seed=random_seed)
     summary_df, probability_df = summarize_monte_carlo_results(mc_df)
     driver_df = get_drivers_of_gap(
         mc_df,
         gap_column="gap_bet_s_diesel",
         input_columns=[
-            "discount_rate",
+            "bet_subsidy",
             "full_loaded_km_per_day",
             "peak_price_per_kwh",
             "off_peak_share",
             "bet_depot_energy_price_per_kwh",
             "bet_public_energy_price_per_kwh",
             "full_loaded_kwh_per_km_year1",
+            "glider_capex",
+            "battery_price_per_kwh",
             "battery_recycle_ratio",
             "battery_lifetime_cycles",
             "unladen_energy_saving",
             "battery_capacity_kwh",
-            "bet_subsidy",
+            "discount_rate",
         ],
     )
     return mc_df, summary_df, probability_df, driver_df
 
 
 @st.cache_data(show_spinner=False)
-def run_independent_mc_cached(n_runs, random_seed):
-    df = run_independent_variable_monte_carlo(n_runs=n_runs, random_seed=random_seed)
+def run_independent_mc_cached(n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_dict, bets_dict):
+    shared = SharedInputs(**shared_dict)
+    diesel = DieselInputs(**diesel_dict)
+    betc = BETCInputs(**betc_dict)
+    bets = BETSInputs(**bets_dict)
+    df = run_independent_variable_monte_carlo(
+        n_runs=n_runs,
+        random_seed=random_seed,
+        shared=shared,
+        diesel_inp=diesel,
+        betc_inp=betc,
+        bets_inp=bets,
+    )
     summary = summarize_independent_effect_spread(df)
     return df, summary
 
 
+@st.cache_data(show_spinner=False)
+def run_projection_cached(shared_dict, diesel_dict, betc_dict, bets_dict, start_year: int, end_year: int):
+    return run_tco_projection(
+        start_year=start_year,
+        end_year=end_year,
+        shared=SharedInputs(**shared_dict),
+        diesel_inp=DieselInputs(**diesel_dict),
+        betc_inp=BETCInputs(**betc_dict),
+        bets_inp=BETSInputs(**bets_dict),
+    )
+
+
+@st.cache_data(show_spinner=False)
+def run_projection_mc_cached(start_year: int, end_year: int, n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_dict, bets_dict):
+    shared = SharedInputs(**shared_dict)
+    diesel = DieselInputs(**diesel_dict)
+    betc = BETCInputs(**betc_dict)
+    bets = BETSInputs(**bets_dict)
+    df = run_projection_monte_carlo(
+        start_year=start_year,
+        end_year=end_year,
+        n_runs=n_runs,
+        random_seed=random_seed,
+        shared=shared,
+        diesel_inp=diesel,
+        betc_inp=betc,
+        bets_inp=bets,
+    )
+    summary = summarize_projection_uncertainty(
+        df,
+        metric_cols=[
+            "diesel_tco_discounted",
+            "betc_tco_discounted",
+            "bets_tco_discounted",
+            "diesel_tco_per_km",
+            "betc_tco_per_km",
+            "bets_tco_per_km",
+            "diesel_tco_per_kwh",
+            "betc_tco_per_kwh",
+            "bets_tco_per_kwh",
+        ],
+    )
+    return df, summary
+
+
+@st.cache_data(show_spinner=False)
+def run_margin_mc_cached(margins_tuple, n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_dict, bets_dict):
+    shared = SharedInputs(**shared_dict)
+    diesel = DieselInputs(**diesel_dict)
+    betc = BETCInputs(**betc_dict)
+    bets = BETSInputs(**bets_dict)
+    df = run_margin_sweep_with_uncertainty(
+        margins=np.array(margins_tuple),
+        n_runs=n_runs,
+        random_seed=random_seed,
+        shared=shared,
+        diesel_inp=diesel,
+        betc_inp=betc,
+        bets_inp=bets,
+    )
+    return df, summarize_margin_uncertainty(df)
+
+
 # -------------------------------
-# Build input objects
+# Sidebar inputs
 # -------------------------------
-def build_input_panels():
+def build_inputs():
     base_shared = SharedInputs()
     base_diesel = DieselInputs()
     base_betc = BETCInputs(battery_recycle_ratio=base_shared.battery_recycle_value_ratio)
     base_bets = BETSInputs(battery_recycle_ratio=base_shared.battery_recycle_value_ratio)
 
-    st.sidebar.header("Main controls")
+    st.sidebar.title("Controls")
+    st.sidebar.caption("Please change core assumptions here; Monte Carlo ranges, which will change if assumptions here are changed, are shown in the main page expander.")
+
     years = st.sidebar.number_input("Analysis years", min_value=1, max_value=20, value=base_shared.years, step=1)
     discount_rate = st.sidebar.number_input("Discount rate", min_value=0.0, value=base_shared.discount_rate, step=0.01, format="%.3f")
     full_loaded_km_per_day = st.sidebar.number_input("Full-loaded km/day", min_value=0.0, value=base_shared.full_loaded_km_per_day, step=10.0)
@@ -328,30 +518,30 @@ def build_input_panels():
         bet_public_energy_price_per_kwh = st.number_input("BET public price (£/kWh)", value=base_shared.bet_public_energy_price_per_kwh, step=0.01)
         peak_price_per_kwh = st.number_input("Peak swapping price (£/kWh)", value=base_shared.peak_price_per_kwh, step=0.01)
         off_peak_price_per_kwh = st.number_input("Off-peak swapping price (£/kWh)", value=base_shared.off_peak_price_per_kwh, step=0.01)
-        off_peak_share = st.slider("Off-peak share", min_value=0.0, max_value=1.0, value=float(base_shared.off_peak_share), step=0.01)
-        electricity_margin = st.number_input("Electricity margin", min_value=0.0, value=base_shared.electricity_margin, step=0.01, format="%.2f")
+        off_peak_share = st.slider("Off-peak swapping percentage", 0.0, 1.0, float(base_shared.off_peak_share), 0.01)
+        electricity_margin = st.number_input("Electricity margin of energy providers", min_value=0.0, value=base_shared.electricity_margin, step=0.01, format="%.2f")
 
-    with st.sidebar.expander("Diesel inputs", expanded=False):
-        diesel_capex = st.number_input("Diesel CAPEX (£)", value=base_diesel.capex, step=1000.0)
-        diesel_service = st.number_input("Diesel annual service cost (£)", value=base_diesel.annual_service_cost, step=100.0)
+    with st.sidebar.expander("Vehicle inputs", expanded=False):
+        diesel_capex = st.number_input("Diesel truck acquisiton cost (£)", value=base_diesel.capex, step=1000.0)
+        glider_capex = st.number_input("Electric glider acquisition cost (£)", value=base_betc.glider_capex, step=1000.0)
+        bet_battery_price = st.number_input("BET battery price (£/kWh)", value=base_betc.battery_price_per_kwh, step=5.0)
+        battery_recycle_ratio = st.number_input ("Battery residual percentage", value=base_betc.battery_recycle_ratio, step=0.01)
         diesel_l_per_km = st.number_input("Diesel year-1 fuel economy (L/km)", value=base_diesel.fuel_economy_full_loaded_year1_l_per_km, step=0.01, format="%.3f")
-
-    with st.sidebar.expander("BET-C inputs", expanded=False):
-        betc_glider_capex = st.number_input("BET-C glider CAPEX (£)", value=base_betc.glider_capex, step=1000.0)
         betc_battery_capacity = st.number_input("BET-C battery capacity (kWh)", value=base_betc.battery_capacity_kwh, step=10.0)
-        betc_battery_price = st.number_input("BET-C battery price (£/kWh)", value=base_betc.battery_price_per_kwh, step=1.0)
-        betc_battery_lifetime_cycles = st.number_input("BET-C battery lifetime cycles", value=float(base_betc.battery_lifetime_cycles), step=100.0)
-        betc_kwh_per_km = st.number_input("BET-C year-1 full-loaded kWh/km", value=base_betc.full_loaded_kwh_per_km_year1, step=0.01, format="%.3f")
-        betc_service = st.number_input("BET-C annual service cost (£)", value=base_betc.annual_service_cost, step=100.0)
+        bet_kwh_per_km = st.number_input("BET year-1 full-loaded kWh/km", value=base_betc.full_loaded_kwh_per_km_year1, step=0.01, format="%.3f")
+        battery_lifetime_cycles = st.number_input("Battery lifetime cycles", value=float(base_betc.battery_lifetime_cycles), step=100.0)
 
-    with st.sidebar.expander("BET-S inputs", expanded=False):
-        bets_glider_capex = st.number_input("BET-S glider CAPEX (£)", value=base_bets.glider_capex, step=1000.0)
-        bets_battery_price = st.number_input("BET-S battery price (£/kWh)", value=base_bets.battery_price_per_kwh, step=1.0)
-        bets_battery_lifetime_cycles = st.number_input("BET-S battery lifetime cycles", value=float(base_bets.battery_lifetime_cycles), step=100.0)
-        bets_kwh_per_km = st.number_input("BET-S year-1 full-loaded kWh/km", value=base_bets.full_loaded_kwh_per_km_year1, step=0.01, format="%.3f")
-        bets_service = st.number_input("BET-S annual battery service cost (£)", value=base_bets.annual_battery_service_cost, step=100.0)
-        bets_rent = st.number_input("BET-S battery rent per month (£)", value=base_bets.battery_rent_per_month_ex_depreciation, step=10.0)
-        bets_swap_fee = st.number_input("BET-S swapping fee flat (£)", value=base_bets.swapping_fee_flat, step=0.5)
+    with st.sidebar.expander("AEaaS granular savings", expanded=False):
+        st.caption("These savings represent the percentage of cost an AEaaS provider has compared with an individual fleet manager. 0.9 = 90% cost saving.")
+        aeaas_glider_cost_factor = st.number_input("Glider cost saving", value=base_shared.aeaas_glider_cost_factor, step=0.01, format="%.2f")
+        aeaas_insurance_cost_factor = st.number_input("Insurance cost saving", value=base_shared.aeaas_insurance_cost_factor, step=0.01, format="%.2f")
+        aeaas_station_capex_factor = st.number_input("Station CAPEX saving", value=base_shared.aeaas_station_capex_factor, step=0.01, format="%.2f")
+        aeaas_site_capex_factor = st.number_input("Site CAPEX saving", value=base_shared.aeaas_site_capex_factor, step=0.01, format="%.2f")
+        aeaas_battery_depr_factor = st.number_input("Battery depreciation saving", value=base_shared.aeaas_battery_depr_factor, step=0.01, format="%.2f")
+        aeaas_battery_service_factor = st.number_input("Battery service saving", value=base_shared.aeaas_battery_service_factor, step=0.01, format="%.2f")
+        aeaas_battery_rent_factor = st.number_input("Battery rent saving", value=base_shared.aeaas_battery_rent_factor, step=0.01, format="%.2f")
+        aeaas_fixed_swapping_fee_factor = st.number_input("Fixed swapping fee saving", value=base_shared.aeaas_fixed_swapping_fee_factor, step=0.01, format="%.2f")
+        aeaas_energy_cost_factor = st.number_input("Energy cost saving", value=base_shared.aeaas_energy_cost_factor, step=0.01, format="%.2f")
 
     shared = replace(
         base_shared,
@@ -367,193 +557,159 @@ def build_input_panels():
         off_peak_price_per_kwh=off_peak_price_per_kwh,
         off_peak_share=off_peak_share,
         electricity_margin=electricity_margin,
+        aeaas_glider_cost_factor=aeaas_glider_cost_factor,
+        aeaas_insurance_cost_factor=aeaas_insurance_cost_factor,
+        aeaas_station_capex_factor=aeaas_station_capex_factor,
+        aeaas_site_capex_factor=aeaas_site_capex_factor,
+        aeaas_battery_depr_factor=aeaas_battery_depr_factor,
+        aeaas_battery_service_factor=aeaas_battery_service_factor,
+        aeaas_battery_rent_factor=aeaas_battery_rent_factor,
+        aeaas_fixed_swapping_fee_factor=aeaas_fixed_swapping_fee_factor,
+        aeaas_energy_cost_factor=aeaas_energy_cost_factor,
     )
-
-    diesel = replace(
-        base_diesel,
-        capex=diesel_capex,
-        annual_service_cost=diesel_service,
-        fuel_economy_full_loaded_year1_l_per_km=diesel_l_per_km,
-    )
-
+    diesel = replace(base_diesel, capex=diesel_capex, fuel_economy_full_loaded_year1_l_per_km=diesel_l_per_km)
     betc = replace(
         base_betc,
-        glider_capex=betc_glider_capex,
+        glider_capex=glider_capex,
         battery_capacity_kwh=betc_battery_capacity,
-        battery_price_per_kwh=betc_battery_price,
-        battery_lifetime_cycles=betc_battery_lifetime_cycles,
-        full_loaded_kwh_per_km_year1=betc_kwh_per_km,
-        annual_service_cost=betc_service,
+        battery_price_per_kwh=bet_battery_price,
+        full_loaded_kwh_per_km_year1=bet_kwh_per_km,
+        battery_lifetime_cycles=battery_lifetime_cycles,
+        battery_recycle_ratio=battery_recycle_ratio
     )
-
     bets = replace(
         base_bets,
-        glider_capex=bets_glider_capex,
-        battery_price_per_kwh=bets_battery_price,
-        battery_lifetime_cycles=bets_battery_lifetime_cycles,
-        full_loaded_kwh_per_km_year1=bets_kwh_per_km,
-        annual_battery_service_cost=bets_service,
-        battery_rent_per_month_ex_depreciation=bets_rent,
-        swapping_fee_flat=bets_swap_fee,
+        glider_capex=glider_capex,
+        battery_price_per_kwh=bet_battery_price,
+        full_loaded_kwh_per_km_year1=bet_kwh_per_km,
+        battery_lifetime_cycles=battery_lifetime_cycles,
+        battery_recycle_ratio=battery_recycle_ratio
     )
-
     return shared, diesel, betc, bets, asset_manager_margin
 
 
 # -------------------------------
 # App layout
 # -------------------------------
-st.title("Truck TCO Streamlit App")
-st.caption("Baseline TCO, future projection, AEaaS, Monte Carlo, and driver analysis based on your current model code.")
+st.title("Truck TCO Analysis")
 
-shared, diesel, betc, bets, asset_manager_margin = build_input_panels()
 
-results, gaps = run_baseline_cached(shared.__dict__, diesel.__dict__, betc.__dict__, bets.__dict__, asset_manager_margin)
+shared, diesel, betc, bets, asset_manager_margin = build_inputs()
+with st.expander("All current model input values", expanded=False):
+    input_values = {
+        "SharedInputs": asdict(shared),
+        "DieselInputs": asdict(diesel),
+        "BETCInputs": asdict(betc),
+        "BETSInputs": asdict(bets),
+        "asset_manager_margin": asset_manager_margin,
+    }
 
-st.subheader("Baseline results")
-col1, col2, col3 = st.columns(3)
-col1.metric("Diesel 5y discounted TCO", f"£{results['diesel']['tco_5y_discounted']:,.0f}")
-col2.metric("BET-C 5y discounted TCO", f"£{results['bet_c']['tco_5y_discounted_recycle']:,.0f}")
-col3.metric("BET-S 5y discounted TCO", f"£{results['bet_s']['tco_5y_discounted_recycle']:,.0f}")
+    rows = []
+    for group, values in input_values.items():
+        if isinstance(values, dict):
+            for name, value in values.items():
+                rows.append({
+                    "Parameter": name,
+                    "Value": value,
+                })
+        else:
+            rows.append({
+                "Parameter": group,
+                "Value": values,
+            })
 
-col4, col5, col6 = st.columns(3)
-col4.metric("Diesel discounted TCO/km", f"£{results['diesel']['tco_per_km_discounted']:.4f}")
-col5.metric("BET-C discounted TCO/km", f"£{results['bet_c']['tco_per_km_discounted_recycle']:.4f}")
-col6.metric("BET-S discounted TCO/km", f"£{results['bet_s']['tco_per_km_discounted_recycle']:.4f}")
-
-with st.expander("Show detailed baseline outputs"):
-    baseline_df = pd.DataFrame(
-        {
-            "Metric": [
-                "5y discounted TCO",
-                "Discounted TCO per km",
-                "Discounted TCO per kWh",
-            ],
-            "Diesel": [
-                results["diesel"]["tco_5y_discounted"],
-                results["diesel"]["tco_per_km_discounted"],
-                results["diesel"]["tco_per_kwh_discounted"],
-            ],
-            "BET-C": [
-                results["bet_c"]["tco_5y_discounted_recycle"],
-                results["bet_c"]["tco_per_km_discounted_recycle"],
-                results["bet_c"]["tco_per_kwh_discounted_recycle"],
-            ],
-            "BET-S": [
-                results["bet_s"]["tco_5y_discounted_recycle"],
-                results["bet_s"]["tco_per_km_discounted_recycle"],
-                results["bet_s"]["tco_per_kwh_discounted_recycle"],
-            ],
-        }
+    st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True,
+        hide_index=True
     )
-    st.dataframe(baseline_df, use_container_width=True)
+results = run_baseline_cached(asdict(shared), asdict(diesel), asdict(betc), asdict(bets), asset_manager_margin)
+gaps = extract_tco_gaps(results)
 
-chart_col1, chart_col2 = st.columns(2)
-with chart_col1:
-    st.pyplot(fig_tco_comparison(results))
-with chart_col2:
-    st.pyplot(fig_tco_gap(gaps))
+with st.expander("Monte Carlo simulation parameter ranges", expanded=False):
+    st.dataframe(uncertainty_table(shared, diesel, betc, bets), use_container_width=True, hide_index=True)
 
-st.subheader("Key gaps")
-gap_col1, gap_col2, gap_col3 = st.columns(3)
-gap_col1.metric("BET-C - Diesel", f"£{gaps['bet_c_vs_diesel']:,.0f}")
-gap_col2.metric("BET-S - Diesel", f"£{gaps['bet_s_vs_diesel']:,.0f}")
-gap_col3.metric("BET-S - BET-C", f"£{gaps['bet_s_vs_bet_c']:,.0f}")
+st.divider()
+
+st.markdown("### TCO Results")
+mc_runs = 500
+mc_seed = 42
+
+with st.spinner("Running Monte Carlo simulation..."):
+    mc_df, mc_summary_df, mc_probability_df, driver_df = run_mc_cached(int(mc_runs), int(mc_seed), asdict(shared), asdict(diesel), asdict(betc), asdict(bets))
+st.pyplot(fig_monte_carlo_histograms(mc_df), use_container_width=True)
+st.pyplot(fig_driver_bar(driver_df), use_container_width=True)
+with st.expander("Summary and probability tables", expanded=False):
+    left, right = st.columns(2)
+    left.dataframe(mc_summary_df, use_container_width=True)
+    right.dataframe(mc_probability_df, use_container_width=True)
+    st.dataframe(driver_df, use_container_width=True)
+
+st.divider()
+
+st.markdown("### Independent one-at-a-time Monte Carlo")
+ind_runs = 500
+ind_seed = 42
+
+with st.spinner("Running independent-variable Monte Carlo..."):
+    indep_df, indep_summary_df = run_independent_mc_cached(int(ind_runs), int(ind_seed), asdict(shared), asdict(diesel), asdict(betc), asdict(bets))
+    # Always show this one
+st.pyplot(
+    fig_independent_bets_vs_diesel_boxplot(indep_df),
+    use_container_width=True
+)
+# Button to show the other two plots
+if st.button("Show All Plots of TCOs and Gaps"):
+    st.pyplot(
+        fig_independent_tco_boxplots(indep_df),
+        use_container_width=True
+    )
+
+    st.pyplot(
+        fig_independent_gap_boxplots(indep_df),
+        use_container_width=True
+    )
+
+with st.expander("Independent-variable spread ranking", expanded=False):
+    st.dataframe(indep_summary_df, use_container_width=True)
+
+st.divider()
+st.markdown("### TCO Projection")
 
 
-# -------------------------------
-# Tabs
-# -------------------------------
-tab1, tab2, tab3, tab4 = st.tabs([
-    "Projection",
-    "AEaaS Margin",
-    "Monte Carlo",
-    "Independent-variable MC",
-])
+start_year = 2026
+end_year = 2040
+proj_runs = 500
 
-with tab1:
-    st.markdown("### Future TCO projection")
-    proj_col1, proj_col2, proj_col3 = st.columns(3)
-    start_year = proj_col1.number_input("Start year", min_value=2020, max_value=2040, value=2026, step=1)
-    end_year = proj_col2.number_input("End year", min_value=2020, max_value=2045, value=2040, step=1)
-    proj_runs = proj_col3.number_input("Projection MC runs", min_value=50, max_value=3000, value=300, step=50)
-
-    projection_df = run_projection_cached(shared.__dict__, diesel.__dict__, betc.__dict__, bets.__dict__, start_year, end_year)
+projection_df = run_projection_cached(asdict(shared), asdict(diesel), asdict(betc), asdict(bets), int(start_year), int(end_year))
+with st.expander("Projected input/output table", expanded=False):
     st.dataframe(projection_df, use_container_width=True)
 
-    st.pyplot(
-        fig_projection(
-            projection_df,
-            ["diesel_tco_5y_discounted", "betc_tco_5y_discounted", "bets_tco_5y_discounted"],
-            ["Diesel", "BET-C", "BET-S"],
-            "Projected 5-Year Discounted TCO",
-            "TCO (£)",
-        )
-    )
-    st.pyplot(
-        fig_projection(
-            projection_df,
-            ["diesel_tco_per_km", "betc_tco_per_km", "bets_tco_per_km"],
-            ["Diesel", "BET-C", "BET-S"],
-            "Projected Discounted TCO per km",
-            "TCO (£/km)",
-        )
-    )
-    st.pyplot(
-        fig_projection(
-            projection_df,
-            ["diesel_tco_per_kwh", "betc_tco_per_kwh", "bets_tco_per_kwh"],
-            ["Diesel", "BET-C", "BET-S"],
-            "Projected Discounted TCO per kWh",
-            "TCO (£/kWh)",
-        )
-    )
 
-    if st.button("Run projection Monte Carlo"):
-        with st.spinner("Running projection Monte Carlo..."):
-            projection_mc_df, summary_tco = run_projection_mc_cached(start_year, end_year, int(proj_runs), 42)
-        st.pyplot(fig_projection_uncertainty(summary_tco))
-        with st.expander("Show projection MC summary table"):
-            st.dataframe(summary_tco, use_container_width=True)
 
-with tab2:
-    st.markdown("### AEaaS margin analysis")
-    margin_runs = st.number_input("AEaaS Monte Carlo runs", min_value=50, max_value=3000, value=500, step=50)
-    margins = st.text_input(
-        "Margins (comma-separated decimals)",
-        value="0.00,0.05,0.10,0.15,0.20,0.25,0.30",
-    )
-    margin_tuple = tuple(float(x.strip()) for x in margins.split(",") if x.strip())
+with st.spinner("Running projection Monte Carlo..."):
+    projection_mc_df, projection_summary_df = run_projection_mc_cached(int(start_year), int(end_year), int(proj_runs), 42, asdict(shared), asdict(diesel), asdict(betc), asdict(bets))
+col1, col2 = st.columns(2)
+with col1:
+    st.pyplot(fig_projection_uncertainty(projection_summary_df, "tco_discounted", "Projected TCO with Uncertainty", "TCO (£)"), use_container_width=True)
+with col2:
+    st.pyplot(fig_projection_uncertainty(projection_summary_df, "tco_per_km", "Projected TCO/km with Uncertainty", "TCO (£/km)"), use_container_width=True)
+with st.expander("Projection MC summary table", expanded=False):
+    st.dataframe(projection_summary_df, use_container_width=True)
 
-    if st.button("Run AEaaS margin uncertainty"):
-        with st.spinner("Running AEaaS margin uncertainty..."):
-            margin_uncertainty_df, margin_summary_df = run_margin_mc_cached(margin_tuple, int(margin_runs), 42)
-        st.pyplot(fig_margin_cost(margin_summary_df))
-        st.pyplot(fig_margin_gap(margin_summary_df))
-        with st.expander("Show margin summary table"):
-            st.dataframe(margin_summary_df, use_container_width=True)
+st.markdown("#### AEaaS Cost with Uncertainty")
+aeaas_col1, aeaas_col2 = st.columns([1, 2])
+margin_runs = aeaas_col1.number_input("AEaaS MC runs", min_value=50, max_value=3000, value=500, step=50)
+margin_text = aeaas_col2.text_input("Margins (comma-separated decimals)", value="0.00,0.05,0.10,0.15,0.20,0.25,0.30")
+try:
+    margin_tuple = tuple(float(x.strip()) for x in margin_text.split(",") if x.strip())
+except ValueError:
+    st.error("Please enter margins as comma-separated numbers, e.g. 0.00,0.05,0.10")
+    margin_tuple = tuple()
 
-with tab3:
-    st.markdown("### Monte Carlo and driver analysis")
-    mc_runs = st.number_input("Monte Carlo runs", min_value=50, max_value=5000, value=500, step=50)
-    if st.button("Run Monte Carlo"):
-        with st.spinner("Running Monte Carlo simulation..."):
-            mc_df, mc_summary_df, mc_probability_df, driver_df = run_mc_cached(int(mc_runs), 42)
-
-        st.markdown("#### Summary")
-        st.dataframe(mc_summary_df, use_container_width=True)
-        st.markdown("#### Probabilities")
-        st.dataframe(mc_probability_df, use_container_width=True)
-        st.markdown("#### Driver ranking")
-        st.dataframe(driver_df, use_container_width=True)
-        st.pyplot(fig_driver_bar(driver_df))
-
-with tab4:
-    st.markdown("### Independent-variable Monte Carlo")
-    indep_runs = st.number_input("Independent-variable MC runs", min_value=50, max_value=5000, value=500, step=50)
-    if st.button("Run independent-variable MC"):
-        with st.spinner("Running independent-variable Monte Carlo..."):
-            indep_mc_df, indep_summary_df = run_independent_mc_cached(int(indep_runs), 42)
-        st.pyplot(fig_independent_bets_vs_diesel_boxplot(indep_mc_df))
-        with st.expander("Show spread ranking table"):
-            st.dataframe(indep_summary_df, use_container_width=True)
+if margin_tuple:
+    with st.spinner("Running AEaaS margin uncertainty..."):
+        margin_uncertainty_df, margin_summary_df = run_margin_mc_cached(margin_tuple, int(margin_runs), 42, asdict(shared), asdict(diesel), asdict(betc), asdict(bets))
+    st.pyplot(fig_margin_cost(margin_summary_df), use_container_width=True)
+    with st.expander("AEaaS margin summary table", expanded=False):
+        st.dataframe(margin_summary_df, use_container_width=True)

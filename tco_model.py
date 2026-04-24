@@ -42,9 +42,16 @@ class SharedInputs:
     off_peak_price_per_kwh: float = 0.10
     electricity_margin: float = 0.39
 
-    # AEaaS supplier discounts
+    # ===== AEaaS granular discount factors =====
     aeaas_glider_cost_factor: float = 0.90
-    aeaas_baas_cost_factor: float = 0.90
+    aeaas_insurance_cost_factor: float = 0.90
+    aeaas_station_capex_factor: float = 1.00
+    aeaas_site_capex_factor: float = 1.00
+    aeaas_battery_depr_factor: float = 1.00
+    aeaas_battery_service_factor: float = 1.00
+    aeaas_battery_rent_factor: float = 0.90
+    aeaas_fixed_swapping_fee_factor: float = 0.90
+    aeaas_energy_cost_factor: float = 0.90
 
 # Diesel-specific technical and cost parameters
 @dataclass
@@ -120,7 +127,14 @@ label_map = {
     "full_loaded_kwh_per_km_year1": "BET Full-loaded kWh per km in Year 1",
     "battery_recycle_ratio": "Battery Residual Percentage",
     "bet_subsidy": "BET Purchase Subsidy",
+    "bet_public_energy_price_per_kwh": "BET Public Energy Price per kWh",
+    "bet_depot_energy_price_per_kwh": "BET Depot Energy Price per kWh",
+    "glider_capex": "Electric Glider CAPEX",
+    "battery_price_per_kwh": "Battery Price per kWh"
+    
 }
+
+
 
 def get_pretty_label(var):
     if var in label_map:
@@ -156,23 +170,23 @@ def diesel_daily_distances(shared: SharedInputs) -> tuple[float, float]:
     return full_loaded, unladen
 
 # Generate yearly diesel fuel consumption trajectory (degradation)
-def diesel_yearly_fuel_economies(inp: DieselInputs) -> List[float]:
+def diesel_yearly_fuel_economies(inp: DieselInputs, years: int) -> List[float]:
     vals = [inp.fuel_economy_full_loaded_year1_l_per_km]
-    for _ in range(1, 5):
+    for _ in range(1, years):
         vals.append(vals[-1] * (1 + inp.fuel_economy_growth_rate))
     return vals
 
 # Generate yearly BET-C energy consumption trajectory
-def betc_yearly_full_loaded_economies(inp: BETCInputs) -> List[float]:
+def betc_yearly_full_loaded_economies(inp: BETCInputs, years: int) -> List[float]:
     vals = [inp.full_loaded_kwh_per_km_year1]
-    for _ in range(1, 5):
+    for _ in range(1, years):
         vals.append(vals[-1] * (1 + inp.fuel_economy_growth_rate))
     return vals
 
 # Generate yearly BET-S energy consumption trajectory
-def bets_yearly_full_loaded_economies(inp: BETSInputs) -> List[float]:
+def bets_yearly_full_loaded_economies(inp: BETSInputs, years: int) -> List[float]:
     vals = [inp.full_loaded_kwh_per_km_year1]
-    for _ in range(1, 5):
+    for _ in range(1, years):
         vals.append(vals[-1] * (1 + inp.fuel_economy_growth_rate))
     return vals
 
@@ -181,7 +195,7 @@ def compute_diesel(shared: SharedInputs, inp: DieselInputs) -> Dict[str, float]:
     years = shared.years
     df = discount_factors(shared.discount_rate, years)
     full_km, unladen_km = diesel_daily_distances(shared)
-    fuel_full = diesel_yearly_fuel_economies(inp)
+    fuel_full = diesel_yearly_fuel_economies(inp, years)
     fuel_unladen = [x * (1 - inp.unladen_energy_saving) for x in fuel_full]
     daily_use = [full_km * ff + unladen_km * fu for ff, fu in zip(fuel_full, fuel_unladen)]
 
@@ -226,15 +240,15 @@ def compute_diesel(shared: SharedInputs, inp: DieselInputs) -> Dict[str, float]:
     tco_undiscounted = (inp.capex - truck_residual) + depot_infra_undiscounted + annual_operating_cost * years + total_energy
     tco_discounted = (inp.capex - truck_residual * df[-1]) + annual_operating_cost * sum(df) + depot_infra_discounted + discounted_energy
 
-    total_5y_diesel_litre = sum(daily_use) * shared.operational_days_per_year
-    total_5y_energy_kwh = total_5y_diesel_litre * inp.litre_to_kwh
+    total_total_diesel_litre = sum(daily_use) * shared.operational_days_per_year
+    total_total_energy_kwh = total_total_diesel_litre * inp.litre_to_kwh
 
     return {
-        "tco_5y_undiscounted": tco_undiscounted,
-        "tco_5y_discounted": tco_discounted,
+        "tco_undiscounted": tco_undiscounted,
+        "tco_discounted": tco_discounted,
         "tco_per_year_discounted": tco_discounted / years,
         "tco_per_km_discounted": tco_discounted / (annual_km * years),
-        "tco_per_kwh_discounted": tco_discounted / total_5y_energy_kwh,
+        "tco_per_kwh_discounted": tco_discounted / total_total_energy_kwh,
         "annual_km": annual_km,
         "daily_energy_year1_l": daily_use[0],
         "truck_residual": truck_residual,
@@ -245,7 +259,7 @@ def compute_bet_c(shared: SharedInputs, inp: BETCInputs, asset_manager_margin: f
     years = shared.years
     df = discount_factors(shared.discount_rate, years)
     full_km, unladen_km = diesel_daily_distances(shared)
-    econ_full = betc_yearly_full_loaded_economies(inp)
+    econ_full = betc_yearly_full_loaded_economies(inp, years)
     econ_unladen = [x * (1 - inp.unladen_energy_saving) for x in econ_full]
     daily_kwh = [full_km * ef + unladen_km * eu for ef, eu in zip(econ_full, econ_unladen)]
 
@@ -300,8 +314,8 @@ def compute_bet_c(shared: SharedInputs, inp: BETCInputs, asset_manager_margin: f
 
 
     return {
-        "tco_5y_discounted_eol": tco_discounted_eol,
-        "tco_5y_discounted_recycle": tco_discounted_recycle,
+        "tco_discounted_eol": tco_discounted_eol,
+        "tco_discounted_recycle": tco_discounted_recycle,
         "tco_per_year_discounted_eol": tco_discounted_eol / years,
         "tco_per_km_discounted_eol": tco_discounted_eol / (annual_km * years),
         "tco_per_kwh_discounted_eol": tco_discounted_eol / (shared.operational_days_per_year * sum(daily_kwh)),
@@ -319,7 +333,7 @@ def compute_bet_s(shared: SharedInputs, inp: BETSInputs, asset_manager_margin: f
     years = shared.years
     df = discount_factors(shared.discount_rate, years)
     full_km, unladen_km = diesel_daily_distances(shared)
-    econ_full = bets_yearly_full_loaded_economies(inp)
+    econ_full = bets_yearly_full_loaded_economies(inp, years)
     econ_unladen = [x * (1 - inp.unladen_energy_saving) for x in econ_full]
     daily_kwh = [full_km * ef + unladen_km * eu for ef, eu in zip(econ_full, econ_unladen)]
 
@@ -336,18 +350,36 @@ def compute_bet_s(shared: SharedInputs, inp: BETSInputs, asset_manager_margin: f
     )
 
     expected_station_service_demand = inp.max_station_service_capacity_trucks_per_day * inp.expected_station_utilisation
-    station_depr_per_truck_5y = ((inp.station_capex + inp.site_capex) / inp.station_lifetime_years) / (expected_station_service_demand * shared.operational_days_per_year) * shared.operational_days_per_year * years
 
+    station_capex_depr_per_truck_total = (
+        (inp.station_capex / inp.station_lifetime_years)
+        / (expected_station_service_demand * shared.operational_days_per_year)
+        * shared.operational_days_per_year
+        * years
+    )
+
+    site_capex_depr_per_truck_total = (
+        (inp.site_capex / inp.station_lifetime_years)
+        / (expected_station_service_demand * shared.operational_days_per_year)
+        * shared.operational_days_per_year
+        * years
+    )
+
+    station_depr_per_truck_total = (
+        station_capex_depr_per_truck_total
+        + site_capex_depr_per_truck_total
+    )
+    
     battery_value_station = inp.station_battery_bays * inp.battery_pack_capacity_kwh * inp.battery_price_per_kwh
     battery_value_truck = expected_station_service_demand * inp.battery_packs_per_truck * inp.battery_pack_capacity_kwh * inp.battery_price_per_kwh
     battery_system_value = battery_value_station + battery_value_truck
 
-    battery_depr_eol_5y = (battery_system_value * (1 - inp.battery_eol_ratio) * (shared.operational_days_per_year * years / inp.battery_lifetime_cycles)) / expected_station_service_demand
-    battery_depr_recycle_5y = (battery_system_value * (1 - inp.battery_recycle_ratio) * (shared.operational_days_per_year * years / inp.battery_lifetime_cycles)) / expected_station_service_demand
+    battery_depr_eol_total = (battery_system_value * (1 - inp.battery_eol_ratio) * (shared.operational_days_per_year * years / inp.battery_lifetime_cycles)) / expected_station_service_demand
+    battery_depr_recycle_total = (battery_system_value * (1 - inp.battery_recycle_ratio) * (shared.operational_days_per_year * years / inp.battery_lifetime_cycles)) / expected_station_service_demand
 
-    battery_service_5y = years * inp.annual_battery_service_cost
-    battery_rent_5y = inp.battery_rent_per_month_ex_depreciation * 12 * years
-    fixed_swapping_5y = inp.swapping_fee_flat * inp.swaps_per_day * shared.operational_days_per_year * years
+    battery_service_total = years * inp.annual_battery_service_cost
+    battery_rent_total = inp.battery_rent_per_month_ex_depreciation * 12 * years
+    fixed_swapping_total = inp.swapping_fee_flat * inp.swaps_per_day * shared.operational_days_per_year * years
 
     base_energy_price = shared.peak_price_per_kwh * (1 - shared.off_peak_share) + shared.off_peak_price_per_kwh * shared.off_peak_share
     energy_service_costs = [daily * inp.swaps_per_day * shared.operational_days_per_year * base_energy_price for daily in daily_kwh]
@@ -355,14 +387,14 @@ def compute_bet_s(shared: SharedInputs, inp: BETSInputs, asset_manager_margin: f
 
     discounted_capex = inp.glider_capex - glider_residual * df[-1]
     discounted_operating = annual_operating_cost * sum(df)
-    discounted_baas_common = ((station_depr_per_truck_5y + battery_service_5y + battery_rent_5y + fixed_swapping_5y) / years) * sum(df)
+    discounted_baas_common = ((station_depr_per_truck_total + battery_service_total + battery_rent_total + fixed_swapping_total) / years) * sum(df)
     discounted_energy = sum(cost * (1 + shared.electricity_margin) * w for cost, w in zip(energy_service_costs, df))
 
     tco_discounted_eol = (
         discounted_capex
         + discounted_operating
         + discounted_baas_common
-        + (battery_depr_eol_5y / years) * sum(df)
+        + (battery_depr_eol_total / years) * sum(df)
         + discounted_energy
         - shared.bet_subsidy
     )
@@ -370,36 +402,75 @@ def compute_bet_s(shared: SharedInputs, inp: BETSInputs, asset_manager_margin: f
         discounted_capex
         + discounted_operating
         + discounted_baas_common
-        + (battery_depr_recycle_5y / years) * sum(df)
+        + (battery_depr_recycle_total / years) * sum(df)
         + discounted_energy
         - shared.bet_subsidy
     )
 
     # ===== AEaaS supplier discounted cost base (BET-S only) =====
-    discounted_driver_cost_5y = annual_salary * sum(df)
-    discounted_insurance_5y = insurance * sum(df)
+    discounted_driver_cost_total = annual_salary * sum(df)
+    discounted_insurance_total = insurance * sum(df)
 
     discounted_glider_cost_for_aeaas = (
-        inp.glider_capex * shared.aeaas_glider_cost_factor
-        - glider_residual * df[-1] * shared.aeaas_glider_cost_factor
+        (inp.glider_capex - glider_residual * df[-1])
+        * shared.aeaas_glider_cost_factor
     )
 
-    discounted_baas_cost_for_aeaas = (
-        (
-            (station_depr_per_truck_5y + battery_service_5y + battery_rent_5y + fixed_swapping_5y) / years
-        ) * sum(df)
-        + (battery_depr_recycle_5y / years) * sum(df)
-        + discounted_energy
-    ) * shared.aeaas_baas_cost_factor
+    discounted_insurance_for_aeaas = (
+        discounted_insurance_total
+        * shared.aeaas_insurance_cost_factor
+    )
+
+    discounted_station_capex_for_aeaas = (
+        ((station_capex_depr_per_truck_total / years) * sum(df))
+        * shared.aeaas_station_capex_factor
+    )
+
+    discounted_site_capex_for_aeaas = (
+        ((site_capex_depr_per_truck_total / years) * sum(df))
+        * shared.aeaas_site_capex_factor
+    )
+
+    discounted_battery_service_for_aeaas = (
+        ((battery_service_total / years) * sum(df))
+        * shared.aeaas_battery_service_factor
+    )
+
+    discounted_battery_rent_for_aeaas = (
+        ((battery_rent_total / years) * sum(df))
+        * shared.aeaas_battery_rent_factor
+    )
+
+    discounted_fixed_swapping_for_aeaas = (
+        ((fixed_swapping_total / years) * sum(df))
+        * shared.aeaas_fixed_swapping_fee_factor
+    )
+
+    discounted_battery_depr_for_aeaas = (
+        ((battery_depr_recycle_total / years) * sum(df))
+        * shared.aeaas_battery_depr_factor
+    )
+
+    discounted_energy_for_aeaas = (
+        discounted_energy
+        * shared.aeaas_energy_cost_factor
+    )
 
     # supplier bears everything except driver cost
-    aeaas_asset_service_cost_5y = (
+    aeaas_asset_service_cost_total = (
         discounted_glider_cost_for_aeaas
-        + discounted_insurance_5y
-        + discounted_baas_cost_for_aeaas
+        + discounted_insurance_for_aeaas
+        + discounted_station_capex_for_aeaas
+        + discounted_site_capex_for_aeaas
+        + discounted_battery_service_for_aeaas
+        + discounted_battery_rent_for_aeaas
+        + discounted_fixed_swapping_for_aeaas
+        + discounted_battery_depr_for_aeaas
+        + discounted_energy_for_aeaas
     )
+
     asset_service = compute_asset_service_unit_prices(
-        asset_service_cost_5y=aeaas_asset_service_cost_5y,
+        asset_service_cost_total=aeaas_asset_service_cost_total,
         annual_driver_cost=annual_salary,
         annual_km=annual_km,
         daily_energy_list=daily_kwh,
@@ -407,11 +478,11 @@ def compute_bet_s(shared: SharedInputs, inp: BETSInputs, asset_manager_margin: f
         margin=asset_manager_margin,
     )
 
-    aas_gap_vs_own_tco = asset_service["freight_total_cost_5y"] - tco_discounted_recycle
+    aas_gap_vs_own_tco = asset_service["freight_total_cost_total"] - tco_discounted_recycle
     
     return {
-        "tco_5y_discounted_eol": tco_discounted_eol,
-        "tco_5y_discounted_recycle": tco_discounted_recycle,
+        "tco_discounted_eol": tco_discounted_eol,
+        "tco_discounted_recycle": tco_discounted_recycle,
         "tco_per_year_discounted_eol": tco_discounted_eol / years,
         "tco_per_km_discounted_eol": tco_discounted_eol / (annual_km * years),
         "tco_per_kwh_discounted_eol": tco_discounted_eol / (shared.operational_days_per_year * sum(daily_kwh)),
@@ -420,13 +491,20 @@ def compute_bet_s(shared: SharedInputs, inp: BETSInputs, asset_manager_margin: f
         "tco_per_kwh_discounted_recycle": tco_discounted_recycle / (shared.operational_days_per_year * sum(daily_kwh)),
         "annual_km": annual_km,
         "daily_energy_year1_kwh": daily_kwh[0],
-        "energy_margin_addition_5y": energy_margin_addition,
+        "energy_margin_addition_total": energy_margin_addition,
         "annual_driver_cost": annual_salary,
         "daily_kwh_by_year": daily_kwh,
         **asset_service,
         "discounted_glider_cost_for_aeaas": discounted_glider_cost_for_aeaas,
-        "discounted_baas_cost_for_aeaas": discounted_baas_cost_for_aeaas,
-        "aeaas_asset_service_cost_5y": aeaas_asset_service_cost_5y,
+        "discounted_insurance_for_aeaas": discounted_insurance_for_aeaas,
+        "discounted_station_capex_for_aeaas": discounted_station_capex_for_aeaas,
+        "discounted_site_capex_for_aeaas": discounted_site_capex_for_aeaas,
+        "discounted_battery_service_for_aeaas": discounted_battery_service_for_aeaas,
+        "discounted_battery_rent_for_aeaas": discounted_battery_rent_for_aeaas,
+        "discounted_fixed_swapping_for_aeaas": discounted_fixed_swapping_for_aeaas,
+        "discounted_battery_depr_for_aeaas": discounted_battery_depr_for_aeaas,
+        "discounted_energy_for_aeaas": discounted_energy_for_aeaas,
+        "aeaas_asset_service_cost_total": aeaas_asset_service_cost_total,
         "aas_gap_vs_own_tco": aas_gap_vs_own_tco,
     }
 
@@ -460,16 +538,16 @@ def run_model(shared=None, diesel_inp=None, betc_inp=None, bets_inp=None, asset_
 # Extract pairwise TCO gaps between vehicle types
 def extract_tco_gaps(results):
     bet_c_vs_diesel = (
-        results["bet_c"]["tco_5y_discounted_recycle"]
-        - results["diesel"]["tco_5y_discounted"]
+        results["bet_c"]["tco_discounted_recycle"]
+        - results["diesel"]["tco_discounted"]
     )
     bet_s_vs_diesel = (
-        results["bet_s"]["tco_5y_discounted_recycle"]
-        - results["diesel"]["tco_5y_discounted"]
+        results["bet_s"]["tco_discounted_recycle"]
+        - results["diesel"]["tco_discounted"]
     )
     bet_s_vs_bet_c = (
-        results["bet_s"]["tco_5y_discounted_recycle"]
-        - results["bet_c"]["tco_5y_discounted_recycle"]
+        results["bet_s"]["tco_discounted_recycle"]
+        - results["bet_c"]["tco_discounted_recycle"]
     )
 
     return {
@@ -482,7 +560,7 @@ def extract_tco_gaps(results):
 ############ AEaaS Pricing Model  ################################################################
 # Convert asset-service cost into unit prices (per km / per kWh) with margin
 def compute_asset_service_unit_prices(
-    asset_service_cost_5y: float,
+    asset_service_cost_total: float,
     annual_driver_cost: float,
     annual_km: float,
     daily_energy_list: list[float],
@@ -492,42 +570,42 @@ def compute_asset_service_unit_prices(
     years = shared.years
     df = discount_factors(shared.discount_rate, years)
 
-    discounted_driver_cost_5y = annual_driver_cost * sum(df)
+    discounted_driver_cost_total = annual_driver_cost * sum(df)
 
-    total_5y_km = annual_km * years
-    total_5y_kwh = sum(daily_energy_list) * shared.operational_days_per_year
+    total_km = annual_km * years
+    total_kwh = sum(daily_energy_list) * shared.operational_days_per_year
 
     # asset manager cost base
-    unit_cost_per_km = asset_service_cost_5y / total_5y_km
-    unit_cost_per_kwh = asset_service_cost_5y / total_5y_kwh
+    unit_cost_per_km = asset_service_cost_total / total_km
+    unit_cost_per_kwh = asset_service_cost_total / total_kwh
 
     # asset manager selling price
     price_per_km_with_margin = unit_cost_per_km * (1 + margin)
     price_per_kwh_with_margin = unit_cost_per_kwh * (1 + margin)
 
-    asset_price_5y = asset_service_cost_5y * (1 + margin)
+    asset_price_total = asset_service_cost_total * (1 + margin)
 
     # driver cost borne by freight company
-    driver_cost_per_km = discounted_driver_cost_5y / total_5y_km
-    driver_cost_per_kwh = discounted_driver_cost_5y / total_5y_kwh
+    driver_cost_per_km = discounted_driver_cost_total / total_km
+    driver_cost_per_kwh = discounted_driver_cost_total / total_kwh
 
     # freight company's all-in effective unit cost
     freight_total_cost_per_km = price_per_km_with_margin + driver_cost_per_km
     freight_total_cost_per_kwh = price_per_kwh_with_margin + driver_cost_per_kwh
 
-    # freight company's all-in 5y total cost
-    freight_total_cost_5y = asset_price_5y + discounted_driver_cost_5y
+    # freight company's all-in total cost
+    freight_total_cost_total = asset_price_total + discounted_driver_cost_total
 
-    freight_total_cost_5y_from_km = freight_total_cost_per_km * total_5y_km
-    freight_total_cost_5y_from_kwh = freight_total_cost_per_kwh * total_5y_kwh
+    freight_total_cost_total_from_km = freight_total_cost_per_km * total_km
+    freight_total_cost_total_from_kwh = freight_total_cost_per_kwh * total_kwh
 
     return {
-        "discounted_driver_cost_5y": discounted_driver_cost_5y,
-        "asset_service_cost_5y": asset_service_cost_5y,
-        "asset_price_5y": asset_price_5y,
+        "discounted_driver_cost_total": discounted_driver_cost_total,
+        "asset_service_cost_total": asset_service_cost_total,
+        "asset_price_total": asset_price_total,
 
-        "total_5y_km": total_5y_km,
-        "total_5y_kwh": total_5y_kwh,
+        "total_km": total_km,
+        "total_kwh": total_kwh,
 
         "unit_cost_per_km": unit_cost_per_km,
         "unit_cost_per_kwh": unit_cost_per_kwh,
@@ -541,9 +619,9 @@ def compute_asset_service_unit_prices(
         "freight_total_cost_per_km": freight_total_cost_per_km,
         "freight_total_cost_per_kwh": freight_total_cost_per_kwh,
 
-        "freight_total_cost_5y": freight_total_cost_5y,
-        "freight_total_cost_5y_from_km": freight_total_cost_5y_from_km,
-        "freight_total_cost_5y_from_kwh": freight_total_cost_5y_from_kwh,
+        "freight_total_cost_total": freight_total_cost_total,
+        "freight_total_cost_total_from_km": freight_total_cost_total_from_km,
+        "freight_total_cost_total_from_kwh": freight_total_cost_total_from_kwh,
     }
 
 # Evaluate effect of asset-manager margin on freight cost (deterministic)
@@ -592,58 +670,40 @@ def run_margin_sweep_with_uncertainty(
     margins,
     n_runs=500,
     random_seed=42,
+    shared=None,
+    diesel_inp=None,
+    betc_inp=None,
+    bets_inp=None,
 ):
+    if shared is None:
+        shared = SharedInputs()
+    if diesel_inp is None:
+        diesel_inp = DieselInputs()
+    if betc_inp is None:
+        betc_inp = BETCInputs(
+            battery_recycle_ratio=shared.battery_recycle_value_ratio
+        )
+    if bets_inp is None:
+        bets_inp = BETSInputs(
+            battery_recycle_ratio=shared.battery_recycle_value_ratio
+        )
+
     rng = np.random.default_rng(random_seed)
+    specs = get_uncertainty_specs(shared, diesel_inp, betc_inp, bets_inp)
     rows = []
 
     for margin in margins:
         for i in range(n_runs):
-            # ===== sample uncertain inputs (same logic as baseline Monte Carlo) =====
-            sampled_discount_rate = sample_triangular(0.08, 0.10, 0.12, rng)
-            sampled_full_loaded_km_per_day = sample_triangular(192.0, 240.0, 288.0, rng)
+            shared_i = shared
+            diesel_i = diesel_inp
+            betc_i = betc_inp
+            bets_i = bets_inp
 
-            sampled_peak_price_per_kwh = sample_triangular(0.16, 0.20, 0.24, rng)
-            sampled_off_peak_share = sample_triangular(0.30, 0.50, 0.70, rng)
-
-            sampled_bet_depot_energy_price_per_kwh = sample_triangular(0.18, 0.22, 0.28, rng)
-            sampled_bet_public_energy_price_per_kwh = sample_triangular(0.30, 0.39, 0.50, rng)
-
-            sampled_full_loaded_kwh_per_km_year1 = sample_triangular(1.20, 1.37, 1.55, rng)
-            sampled_battery_recycle_ratio = sample_triangular(0.05, 0.10, 0.20, rng)
-            sampled_battery_lifetime_cycles = sample_triangular(1600.0, 2000.0, 3000.0, rng)
-            sampled_unladen_energy_saving = sample_triangular(0.20, 0.25, 0.30, rng)
-
-            sampled_battery_capacity_kwh = sample_triangular(400.0, 621.0, 800.0, rng)
-
-            sampled_bet_subsidy = sample_triangular(0.0, 0.0, 120000.0, rng)
-
-            # ===== build sampled inputs =====
-            shared_i = SharedInputs(
-                discount_rate=sampled_discount_rate,
-                full_loaded_km_per_day=sampled_full_loaded_km_per_day,
-                peak_price_per_kwh=sampled_peak_price_per_kwh,
-                off_peak_share=sampled_off_peak_share,
-                bet_depot_energy_price_per_kwh=sampled_bet_depot_energy_price_per_kwh,
-                bet_public_energy_price_per_kwh=sampled_bet_public_energy_price_per_kwh,
-                bet_subsidy=sampled_bet_subsidy,
-            )
-
-            diesel_i = DieselInputs()
-
-            betc_i = BETCInputs(
-                battery_recycle_ratio=sampled_battery_recycle_ratio,
-                battery_lifetime_cycles=sampled_battery_lifetime_cycles,
-                unladen_energy_saving=sampled_unladen_energy_saving,
-                full_loaded_kwh_per_km_year1=sampled_full_loaded_kwh_per_km_year1,
-                battery_capacity_kwh=sampled_battery_capacity_kwh,
-            )
-
-            bets_i = BETSInputs(
-                battery_recycle_ratio=sampled_battery_recycle_ratio,
-                battery_lifetime_cycles=sampled_battery_lifetime_cycles,
-                unladen_energy_saving=sampled_unladen_energy_saving,
-                full_loaded_kwh_per_km_year1=sampled_full_loaded_kwh_per_km_year1,
-            )
+            for spec in specs:
+                sampled_value = sample_triangular(spec["left"], spec["mode"], spec["right"], rng)
+                shared_i, diesel_i, betc_i, bets_i = apply_single_variable_change(
+                    shared_i, diesel_i, betc_i, bets_i, spec, sampled_value
+                )
 
             results = run_model(
                 shared=shared_i,
@@ -704,6 +764,8 @@ def get_drivers_of_gap(
             "bet_depot_energy_price_per_kwh",
             "bet_public_energy_price_per_kwh",
             "full_loaded_kwh_per_km_year1",
+            "glider_capex",
+            "battery_price_per_kwh",
             "battery_recycle_ratio",
             "battery_lifetime_cycles",
             "unladen_energy_saving",
@@ -768,7 +830,7 @@ def run_sensitivity_analysis(
             battery_recycle_ratio=shared.battery_recycle_value_ratio
         )
 
-    # 允许 target_class 既可以是字符串，也可以是列表
+    # 
     if isinstance(target_class, str):
         target_classes = [target_class]
     else:
@@ -791,7 +853,7 @@ def run_sensitivity_analysis(
         betc_i = betc_inp
         bets_i = bets_inp
 
-        # 可以同时修改多个 class
+        # 
         if "shared" in target_classes:
             shared_i = update_input(shared_i, variable_name, new_value)
 
@@ -804,7 +866,7 @@ def run_sensitivity_analysis(
         if "bets" in target_classes:
             bets_i = update_input(bets_i, variable_name, new_value)
 
-        # shared 改完后，继续同步 recycle ratio 到 BETC/BETS 默认输入
+        # 
         if "shared" in target_classes:
             betc_i = update_input(
                 betc_i,
@@ -874,100 +936,72 @@ def sample_triangular(left, mode, right, rng):
 # =========================================================
 
 # Define uncertain variables and their distributions
-def get_uncertainty_specs():
+def get_uncertainty_specs(shared=None, diesel_inp=None, betc_inp=None, bets_inp=None):
     """
-    target_class:
-        - "shared"
-        - "diesel"
-        - "betc"
-        - "bets"
-        - ["betc", "bets"]  # jointly changed in both BET-C and BET-S
+    Define uncertain variables and triangular distributions.
+
+    When inputs are supplied from the Streamlit app, the Mode values are taken
+    from those current inputs so the displayed Monte Carlo range table and the
+    Monte Carlo sampling both follow the sidebar assumptions.
     """
+    if shared is None:
+        shared = SharedInputs()
+    if diesel_inp is None:
+        diesel_inp = DieselInputs()
+    if betc_inp is None:
+        betc_inp = BETCInputs(
+            battery_recycle_ratio=shared.battery_recycle_value_ratio
+        )
+    if bets_inp is None:
+        bets_inp = BETSInputs(
+            battery_recycle_ratio=shared.battery_recycle_value_ratio
+        )
+
+    def pct_range(mode, low_factor, high_factor, min_value=None, max_value=None):
+        left = mode * low_factor
+        right = mode * high_factor
+        if min_value is not None:
+            left = max(min_value, left)
+        if max_value is not None:
+            right = min(max_value, right)
+        if left > mode:
+            left = mode
+        if right < mode:
+            right = mode
+        return left, mode, right
+
+    discount_left, discount_mode, discount_right = pct_range(shared.discount_rate, 0.8, 1.2, min_value=0.0)
+    vkt_left, vkt_mode, vkt_right = pct_range(shared.full_loaded_km_per_day, 0.8, 1.2, min_value=0.0)
+    peak_left, peak_mode, peak_right = pct_range(shared.peak_price_per_kwh, 0.8, 1.2, min_value=0.0)
+    offpeak_left, offpeak_mode, offpeak_right = pct_range(shared.off_peak_share, 0.6, 1.4, min_value=0.0, max_value=1.0)
+    depot_left, depot_mode, depot_right = pct_range(shared.bet_depot_energy_price_per_kwh, 0.8, 1.25, min_value=0.0)
+    public_left, public_mode, public_right = pct_range(shared.bet_public_energy_price_per_kwh, 0.8, 1.25, min_value=0.0)
+    kwh_left, kwh_mode, kwh_right = pct_range(betc_inp.full_loaded_kwh_per_km_year1, 0.88, 1.13, min_value=0.0)
+    glider_left, glider_mode, glider_right = pct_range(betc_inp.glider_capex, 0.8, 1.2, min_value=0.0)
+    battery_price_left, battery_price_mode, battery_price_right = pct_range(betc_inp.battery_price_per_kwh, 0.8, 1.2, min_value=0.0)
+    recycle_left, recycle_mode, recycle_right = pct_range(betc_inp.battery_recycle_ratio, 0.5, 2.0, min_value=0.0, max_value=1.0)
+    cycle_left, cycle_mode, cycle_right = pct_range(betc_inp.battery_lifetime_cycles, 0.8, 1.5, min_value=1.0)
+    unladen_left, unladen_mode, unladen_right = pct_range(betc_inp.unladen_energy_saving, 0.8, 1.2, min_value=0.0, max_value=1.0)
+    cap_left, cap_mode, cap_right = pct_range(betc_inp.battery_capacity_kwh, 400.0 / 621.0, 800.0 / 621.0, min_value=1.0)
+    subsidy_left = 0.0
+    subsidy_mode = shared.bet_subsidy
+    subsidy_right = max(120000.0, subsidy_mode * 1.2)
+
     return [
-        {
-            "variable": "discount_rate",
-            "target_class": "shared",
-            "left": 0.08,
-            "mode": 0.10,
-            "right": 0.12,
-        },
-        {
-            "variable": "full_loaded_km_per_day",
-            "target_class": "shared",
-            "left": 192.0,
-            "mode": 240.0,
-            "right": 288.0,
-        },
-        {
-            "variable": "peak_price_per_kwh",
-            "target_class": "shared",
-            "left": 0.16,
-            "mode": 0.20,
-            "right": 0.24,
-        },
-        {
-            "variable": "off_peak_share",
-            "target_class": "shared",
-            "left": 0.30,
-            "mode": 0.50,
-            "right": 0.70,
-        },
-        {
-            "variable": "bet_depot_energy_price_per_kwh",
-            "target_class": "shared",
-            "left": 0.18,
-            "mode": 0.22,
-            "right": 0.28,
-        },
-        {
-            "variable": "bet_public_energy_price_per_kwh",
-            "target_class": "shared",
-            "left": 0.30,
-            "mode": 0.39,
-            "right": 0.50,
-        },
-        {
-            "variable": "full_loaded_kwh_per_km_year1",
-            "target_class": ["betc", "bets"],
-            "left": 1.20,
-            "mode": 1.37,
-            "right": 1.55,
-        },
-        {
-            "variable": "battery_recycle_ratio",
-            "target_class": ["betc", "bets"],
-            "left": 0.05,
-            "mode": 0.10,
-            "right": 0.20,
-        },
-        {
-            "variable": "battery_lifetime_cycles",
-            "target_class": ["betc", "bets"],
-            "left": 1600.0,
-            "mode": 2000.0,
-            "right": 3000.0,
-        },
-        {
-            "variable": "unladen_energy_saving",
-            "target_class": ["betc", "bets"],
-            "left": 0.20,
-            "mode": 0.25,
-            "right": 0.30,
-        },
-        {
-            "variable": "battery_capacity_kwh",
-            "target_class": "betc",
-            "left": 400.0,
-            "mode": 621.0,
-            "right": 800.0,
-        },
-        {
-            "variable": "bet_subsidy",
-            "target_class": "shared",
-            "left": 0,
-            "mode": 0,
-            "right": 120000.0,
-        },
+        {"variable": "discount_rate", "target_class": "shared", "left": discount_left, "mode": discount_mode, "right": discount_right},
+        {"variable": "full_loaded_km_per_day", "target_class": "shared", "left": vkt_left, "mode": vkt_mode, "right": vkt_right},
+        {"variable": "peak_price_per_kwh", "target_class": "shared", "left": peak_left, "mode": peak_mode, "right": peak_right},
+        {"variable": "off_peak_share", "target_class": "shared", "left": offpeak_left, "mode": offpeak_mode, "right": offpeak_right},
+        {"variable": "bet_depot_energy_price_per_kwh", "target_class": "shared", "left": depot_left, "mode": depot_mode, "right": depot_right},
+        {"variable": "bet_public_energy_price_per_kwh", "target_class": "shared", "left": public_left, "mode": public_mode, "right": public_right},
+        {"variable": "full_loaded_kwh_per_km_year1", "target_class": ["betc", "bets"], "left": kwh_left, "mode": kwh_mode, "right": kwh_right},
+        {"variable": "glider_capex", "target_class": ["betc", "bets"], "left": glider_left, "mode": glider_mode, "right": glider_right},
+        {"variable": "battery_price_per_kwh", "target_class": ["betc", "bets"], "left": battery_price_left, "mode": battery_price_mode, "right": battery_price_right},
+        {"variable": "battery_recycle_ratio", "target_class": ["betc", "bets"], "left": recycle_left, "mode": recycle_mode, "right": recycle_right},
+        {"variable": "battery_lifetime_cycles", "target_class": ["betc", "bets"], "left": cycle_left, "mode": cycle_mode, "right": cycle_right},
+        {"variable": "unladen_energy_saving", "target_class": ["betc", "bets"], "left": unladen_left, "mode": unladen_mode, "right": unladen_right},
+        {"variable": "battery_capacity_kwh", "target_class": "betc", "left": cap_left, "mode": cap_mode, "right": cap_right},
+        {"variable": "bet_subsidy", "target_class": "shared", "left": subsidy_left, "mode": subsidy_mode, "right": subsidy_right},
     ]
 
 # Apply one uncertain variable change for calculations
@@ -1002,25 +1036,36 @@ def apply_single_variable_change(shared, diesel_inp, betc_inp, bets_inp, spec, s
     return shared_i, diesel_i, betc_i, bets_i
 
 # Run one-at-a-time Monte Carlo simulation for each variable
-def run_independent_variable_monte_carlo(n_runs=500, random_seed=42):
+def run_independent_variable_monte_carlo(
+    n_runs=500,
+    random_seed=42,
+    shared=None,
+    diesel_inp=None,
+    betc_inp=None,
+    bets_inp=None,
+):
     """
     For each uncertain variable:
     - vary ONLY that variable according to its triangular distribution
-    - keep all other variables at baseline
+    - keep all other variables at the current baseline inputs
     - run model n_runs times
     Returns a long dataframe for boxplotting.
     """
-    rng = np.random.default_rng(random_seed)
-    specs = get_uncertainty_specs()
+    if shared is None:
+        shared = SharedInputs()
+    if diesel_inp is None:
+        diesel_inp = DieselInputs()
+    if betc_inp is None:
+        betc_inp = BETCInputs(
+            battery_recycle_ratio=shared.battery_recycle_value_ratio
+        )
+    if bets_inp is None:
+        bets_inp = BETSInputs(
+            battery_recycle_ratio=shared.battery_recycle_value_ratio
+        )
 
-    base_shared = SharedInputs()
-    base_diesel = DieselInputs()
-    base_betc = BETCInputs(
-        battery_recycle_ratio=base_shared.battery_recycle_value_ratio
-    )
-    base_bets = BETSInputs(
-        battery_recycle_ratio=base_shared.battery_recycle_value_ratio
-    )
+    rng = np.random.default_rng(random_seed)
+    specs = get_uncertainty_specs(shared, diesel_inp, betc_inp, bets_inp)
 
     rows = []
 
@@ -1028,40 +1073,25 @@ def run_independent_variable_monte_carlo(n_runs=500, random_seed=42):
         var_name = spec["variable"]
 
         for i in range(n_runs):
-            sampled_value = sample_triangular(
-                spec["left"], spec["mode"], spec["right"], rng
-            )
-
-            # reset to baseline every run
-            shared_i = base_shared
-            diesel_i = base_diesel
-            betc_i = base_betc
-            bets_i = base_bets
+            sampled_value = sample_triangular(spec["left"], spec["mode"], spec["right"], rng)
 
             shared_i, diesel_i, betc_i, bets_i = apply_single_variable_change(
-                shared_i, diesel_i, betc_i, bets_i, spec, sampled_value
+                shared, diesel_inp, betc_inp, bets_inp, spec, sampled_value
             )
 
-            results = run_model(
-                shared=shared_i,
-                diesel_inp=diesel_i,
-                betc_inp=betc_i,
-                bets_inp=bets_i,
-            )
+            results = run_model(shared=shared_i, diesel_inp=diesel_i, betc_inp=betc_i, bets_inp=bets_i)
 
-            diesel_tco = results["diesel"]["tco_5y_discounted"]
-            betc_tco = results["bet_c"]["tco_5y_discounted_recycle"]
-            bets_tco = results["bet_s"]["tco_5y_discounted_recycle"]
+            diesel_tco = results["diesel"]["tco_discounted"]
+            betc_tco = results["bet_c"]["tco_discounted_recycle"]
+            bets_tco = results["bet_s"]["tco_discounted_recycle"]
 
             rows.append({
                 "variable": var_name,
                 "iteration": i + 1,
                 "sampled_value": sampled_value,
-
                 "diesel_tco": diesel_tco,
                 "bet_c_tco": betc_tco,
                 "bet_s_tco": bets_tco,
-
                 "gap_bet_c_diesel": betc_tco - diesel_tco,
                 "gap_bet_s_diesel": bets_tco - diesel_tco,
                 "gap_bet_s_bet_c": bets_tco - betc_tco,
@@ -1069,107 +1099,118 @@ def run_independent_variable_monte_carlo(n_runs=500, random_seed=42):
 
     return pd.DataFrame(rows)
 
-def run_monte_carlo_simulation(n_runs=500, random_seed=42):
+def run_monte_carlo_simulation(
+    n_runs=500,
+    random_seed=42,
+    shared=None,
+    diesel_inp=None,
+    betc_inp=None,
+    bets_inp=None,
+):
+    if shared is None:
+        shared = SharedInputs()
+    if diesel_inp is None:
+        diesel_inp = DieselInputs()
+    if betc_inp is None:
+        betc_inp = BETCInputs(
+            battery_recycle_ratio=shared.battery_recycle_value_ratio
+        )
+    if bets_inp is None:
+        bets_inp = BETSInputs(
+            battery_recycle_ratio=shared.battery_recycle_value_ratio
+        )
+
     rng = np.random.default_rng(random_seed)
+    specs = get_uncertainty_specs(shared, diesel_inp, betc_inp, bets_inp)
     rows = []
 
     for i in range(n_runs):
-        # ===== 1) sample uncertain inputs (triangular distributions) =====
-        sampled_discount_rate = sample_triangular(0.08, 0.10, 0.12, rng)
+        shared_i = shared
+        diesel_i = diesel_inp
+        betc_i = betc_inp
+        bets_i = bets_inp
+        sampled = {}
 
-        sampled_full_loaded_km_per_day = sample_triangular(192.0, 240.0, 288.0, rng)
+        for spec in specs:
+            sampled_value = sample_triangular(spec["left"], spec["mode"], spec["right"], rng)
+            sampled[spec["variable"]] = sampled_value
+            shared_i, diesel_i, betc_i, bets_i = apply_single_variable_change(
+                shared_i, diesel_i, betc_i, bets_i, spec, sampled_value
+            )
 
-        sampled_peak_price_per_kwh = sample_triangular(0.16, 0.20, 0.24, rng)
-        sampled_off_peak_share = sample_triangular(0.30, 0.50, 0.70, rng)
+        results = run_model(shared=shared_i, diesel_inp=diesel_i, betc_inp=betc_i, bets_inp=bets_i)
 
-        sampled_bet_depot_energy_price_per_kwh = sample_triangular(0.18, 0.22, 0.28, rng)
-        sampled_bet_public_energy_price_per_kwh = sample_triangular(0.30, 0.39, 0.50, rng)
-
-        # BET-C and BET-S jointly changing variables
-        sampled_full_loaded_kwh_per_km_year1 = sample_triangular(1.20, 1.37, 1.55, rng)
-        sampled_battery_recycle_ratio = sample_triangular(0.05, 0.10, 0.20, rng)
-        sampled_battery_lifetime_cycles = sample_triangular(1600.0, 2000.0, 3000.0, rng)
-        sampled_unladen_energy_saving = sample_triangular(0.2, 0.25, 0.3, rng)
-        sampled_bet_subsidy = sample_triangular(0.0, 0.0, 120000.0, rng)
-
-        # BET-C only
-        sampled_battery_capacity_kwh = sample_triangular(400.0, 621.0, 800.0, rng)
-
-        # ===== 2) build sampled inputs =====
-        shared_i = SharedInputs(
-            discount_rate=sampled_discount_rate,
-            full_loaded_km_per_day=sampled_full_loaded_km_per_day,
-            peak_price_per_kwh=sampled_peak_price_per_kwh,
-            off_peak_share=sampled_off_peak_share,
-            bet_depot_energy_price_per_kwh=sampled_bet_depot_energy_price_per_kwh,
-            bet_public_energy_price_per_kwh=sampled_bet_public_energy_price_per_kwh,
-            bet_subsidy=sampled_bet_subsidy,
-        )
-
-        diesel_i = DieselInputs()
-
-        betc_i = BETCInputs(
-            battery_recycle_ratio=sampled_battery_recycle_ratio,
-            battery_lifetime_cycles=sampled_battery_lifetime_cycles,
-            unladen_energy_saving=sampled_unladen_energy_saving,
-            full_loaded_kwh_per_km_year1=sampled_full_loaded_kwh_per_km_year1,
-            battery_capacity_kwh=sampled_battery_capacity_kwh,
-        )
-
-        bets_i = BETSInputs(
-            battery_recycle_ratio=sampled_battery_recycle_ratio,
-            battery_lifetime_cycles=sampled_battery_lifetime_cycles,
-            unladen_energy_saving=sampled_unladen_energy_saving,
-            full_loaded_kwh_per_km_year1=sampled_full_loaded_kwh_per_km_year1,
-        )
-
-        # ===== 3) run model =====
-        diesel = compute_diesel(shared_i, diesel_i)
-        bet_c = compute_bet_c(shared_i, betc_i)
-        bet_s = compute_bet_s(shared_i, bets_i)
-
-        diesel_tco = diesel["tco_5y_discounted"]
-        bet_c_tco = bet_c["tco_5y_discounted_recycle"]
-        bet_s_tco = bet_s["tco_5y_discounted_recycle"]
-
-        gap_bet_c_diesel = bet_c_tco - diesel_tco
-        gap_bet_s_diesel = bet_s_tco - diesel_tco
-        gap_bet_s_bet_c = bet_s_tco - bet_c_tco
+        diesel_tco = results["diesel"]["tco_discounted"]
+        bet_c_tco = results["bet_c"]["tco_discounted_recycle"]
+        bet_s_tco = results["bet_s"]["tco_discounted_recycle"]
 
         rows.append({
             "iteration": i + 1,
-
-            "discount_rate": sampled_discount_rate,
-            "full_loaded_km_per_day": sampled_full_loaded_km_per_day,
-            "peak_price_per_kwh": sampled_peak_price_per_kwh,
-            "off_peak_share": sampled_off_peak_share,
-            "bet_depot_energy_price_per_kwh": sampled_bet_depot_energy_price_per_kwh,
-            "bet_public_energy_price_per_kwh": sampled_bet_public_energy_price_per_kwh,
-
-            "full_loaded_kwh_per_km_year1": sampled_full_loaded_kwh_per_km_year1,
-            "battery_recycle_ratio": sampled_battery_recycle_ratio,
-            "battery_lifetime_cycles": sampled_battery_lifetime_cycles,
-            "unladen_energy_saving": sampled_unladen_energy_saving,
-
-            "battery_capacity_kwh": sampled_battery_capacity_kwh,
-
-            "bet_subsidy": sampled_bet_subsidy,
-
+            "discount_rate": sampled.get("discount_rate"),
+            "full_loaded_km_per_day": sampled.get("full_loaded_km_per_day"),
+            "peak_price_per_kwh": sampled.get("peak_price_per_kwh"),
+            "off_peak_share": sampled.get("off_peak_share"),
+            "bet_depot_energy_price_per_kwh": sampled.get("bet_depot_energy_price_per_kwh"),
+            "bet_public_energy_price_per_kwh": sampled.get("bet_public_energy_price_per_kwh"),
+            "full_loaded_kwh_per_km_year1": sampled.get("full_loaded_kwh_per_km_year1"),
+            "glider_capex": sampled.get("glider_capex"),
+            "battery_price_per_kwh": sampled.get("battery_price_per_kwh"),
+            "battery_recycle_ratio": sampled.get("battery_recycle_ratio"),
+            "battery_lifetime_cycles": sampled.get("battery_lifetime_cycles"),
+            "unladen_energy_saving": sampled.get("unladen_energy_saving"),
+            "battery_capacity_kwh": sampled.get("battery_capacity_kwh"),
+            "bet_subsidy": sampled.get("bet_subsidy"),
             "diesel_tco": diesel_tco,
             "bet_c_tco": bet_c_tco,
             "bet_s_tco": bet_s_tco,
-            "gap_bet_c_diesel": gap_bet_c_diesel,
-            "gap_bet_s_diesel": gap_bet_s_diesel,
-            "gap_bet_s_bet_c": gap_bet_s_bet_c,
+            "gap_bet_c_diesel": bet_c_tco - diesel_tco,
+            "gap_bet_s_diesel": bet_s_tco - diesel_tco,
+            "gap_bet_s_bet_c": bet_s_tco - bet_c_tco,
         })
 
     return pd.DataFrame(rows)
+
+# Rank the effects of those uncertainties
+def summarize_independent_effect_spread(df):
+    """
+    Optional summary table:
+    compare the spread caused by each variable independently.
+    """
+    rows = []
+
+    for var, group in df.groupby("variable"):
+        rows.append({
+            "variable": var,
+
+            "diesel_tco_iqr": group["diesel_tco"].quantile(0.75) - group["diesel_tco"].quantile(0.25),
+            "bet_c_tco_iqr": group["bet_c_tco"].quantile(0.75) - group["bet_c_tco"].quantile(0.25),
+            "bet_s_tco_iqr": group["bet_s_tco"].quantile(0.75) - group["bet_s_tco"].quantile(0.25),
+
+            "gap_bet_c_diesel_iqr": group["gap_bet_c_diesel"].quantile(0.75) - group["gap_bet_c_diesel"].quantile(0.25),
+            "gap_bet_s_diesel_iqr": group["gap_bet_s_diesel"].quantile(0.75) - group["gap_bet_s_diesel"].quantile(0.25),
+            "gap_bet_s_bet_c_iqr": group["gap_bet_s_bet_c"].quantile(0.75) - group["gap_bet_s_bet_c"].quantile(0.25),
+        })
+
+    out = pd.DataFrame(rows)
+
+    out["max_tco_iqr"] = out[["diesel_tco_iqr", "bet_c_tco_iqr", "bet_s_tco_iqr"]].max(axis=1)
+    out["max_gap_iqr"] = out[[
+        "gap_bet_c_diesel_iqr",
+        "gap_bet_s_diesel_iqr",
+        "gap_bet_s_bet_c_iqr"
+    ]].max(axis=1)
+
+    return out.sort_values("max_gap_iqr", ascending=False).reset_index(drop=True)
 
 def run_projection_monte_carlo(
     start_year=2026,
     end_year=2040,
     n_runs=500,
     random_seed=42,
+    shared=None,
+    diesel_inp=None,
+    betc_inp=None,
+    bets_inp=None,
 ):
     """
     For each purchase year:
@@ -1177,6 +1218,19 @@ def run_projection_monte_carlo(
     2. run Monte Carlo around that year's projected values
     3. collect TCO distributions
     """
+    if shared is None:
+        shared = SharedInputs()
+    if diesel_inp is None:
+        diesel_inp = DieselInputs()
+    if betc_inp is None:
+        betc_inp = BETCInputs(
+            battery_recycle_ratio=shared.battery_recycle_value_ratio
+        )
+    if bets_inp is None:
+        bets_inp = BETSInputs(
+            battery_recycle_ratio=shared.battery_recycle_value_ratio
+        )
+
     rng = np.random.default_rng(random_seed)
     rows = []
 
@@ -1184,14 +1238,10 @@ def run_projection_monte_carlo(
         shared_base, diesel_base, betc_base, bets_base = build_projected_inputs_for_year(
             target_year=year,
             base_year=start_year,
-            shared=SharedInputs(),
-            diesel_inp=DieselInputs(),
-            betc_inp=BETCInputs(
-                battery_recycle_ratio=SharedInputs().battery_recycle_value_ratio
-            ),
-            bets_inp=BETSInputs(
-                battery_recycle_ratio=SharedInputs().battery_recycle_value_ratio
-            ),
+            shared=shared,
+            diesel_inp=diesel_inp,
+            betc_inp=betc_inp,
+            bets_inp=bets_inp,
         )
 
         for i in range(n_runs):
@@ -1245,10 +1295,24 @@ def run_projection_monte_carlo(
                 rng
             )
 
+            sampled_glider_capex = sample_triangular(
+                betc_base.glider_capex * 0.8,
+                betc_base.glider_capex,
+                betc_base.glider_capex * 1.2,
+                rng
+            )
+
+            sampled_battery_price_per_kwh = sample_triangular(
+                betc_base.battery_price_per_kwh * 0.8,
+                betc_base.battery_price_per_kwh,
+                betc_base.battery_price_per_kwh * 1.2,
+                rng
+            )
+
             sampled_battery_recycle_ratio = sample_triangular(
-                max(0.0, SharedInputs().battery_recycle_value_ratio * 0.5),
-                SharedInputs().battery_recycle_value_ratio,
-                min(1.0, SharedInputs().battery_recycle_value_ratio * 2.0),
+                max(0.0, betc_base.battery_recycle_ratio * 0.5),
+                betc_base.battery_recycle_ratio,
+                min(1.0, betc_base.battery_recycle_ratio * 2.0),
                 rng
             )
 
@@ -1260,9 +1324,9 @@ def run_projection_monte_carlo(
             )
 
             sampled_unladen_energy_saving = sample_triangular(
-                0.20,
-                0.25,
-                0.30,
+                max(0.0, betc_base.unladen_energy_saving * 0.8),
+                betc_base.unladen_energy_saving,
+                min(1.0, betc_base.unladen_energy_saving * 1.2),
                 rng
             )
 
@@ -1273,7 +1337,7 @@ def run_projection_monte_carlo(
                 rng
             )
             
-            sampled_bet_subsidy = sample_triangular(0.0, 0.0, 120000.0, rng)
+            sampled_bet_subsidy = sample_triangular(0.0, shared_base.bet_subsidy, max(120000.0, shared_base.bet_subsidy * 1.2), rng)
             
             # ===== build sampled inputs =====
             shared_i = replace(
@@ -1291,6 +1355,8 @@ def run_projection_monte_carlo(
 
             betc_i = replace(
                 betc_base,
+                glider_capex=sampled_glider_capex,
+                battery_price_per_kwh=sampled_battery_price_per_kwh,
                 battery_recycle_ratio=sampled_battery_recycle_ratio,
                 battery_lifetime_cycles=sampled_battery_lifetime_cycles,
                 unladen_energy_saving=sampled_unladen_energy_saving,
@@ -1300,6 +1366,8 @@ def run_projection_monte_carlo(
 
             bets_i = replace(
                 bets_base,
+                glider_capex=sampled_glider_capex,
+                battery_price_per_kwh=sampled_battery_price_per_kwh,
                 battery_recycle_ratio=sampled_battery_recycle_ratio,
                 battery_lifetime_cycles=sampled_battery_lifetime_cycles,
                 unladen_energy_saving=sampled_unladen_energy_saving,
@@ -1317,9 +1385,9 @@ def run_projection_monte_carlo(
                 "year": year,
                 "iteration": i + 1,
 
-                "diesel_tco_5y_discounted": results["diesel"]["tco_5y_discounted"],
-                "betc_tco_5y_discounted": results["bet_c"]["tco_5y_discounted_recycle"],
-                "bets_tco_5y_discounted": results["bet_s"]["tco_5y_discounted_recycle"],
+                "diesel_tco_discounted": results["diesel"]["tco_discounted"],
+                "betc_tco_discounted": results["bet_c"]["tco_discounted_recycle"],
+                "bets_tco_discounted": results["bet_s"]["tco_discounted_recycle"],
 
                 "diesel_tco_per_km": results["diesel"]["tco_per_km_discounted"],
                 "betc_tco_per_km": results["bet_c"]["tco_per_km_discounted_recycle"],
@@ -1374,6 +1442,29 @@ def summarize_monte_carlo_results(df):
     probability_df = pd.DataFrame(probability_rows)
 
     return summary_df, probability_df
+
+
+def summarize_projection_uncertainty(df, metric_cols=None):
+    if metric_cols is None:
+        metric_cols = [
+            "diesel_tco_discounted",
+            "betc_tco_discounted",
+            "bets_tco_discounted",
+        ]
+
+    rows = []
+
+    for year, group in df.groupby("year"):
+        row = {"year": year}
+
+        for col in metric_cols:
+            row[f"{col}_p5"] = group[col].quantile(0.05)
+            row[f"{col}_p50"] = group[col].quantile(0.50)
+            row[f"{col}_p95"] = group[col].quantile(0.95)
+
+        rows.append(row)
+
+    return pd.DataFrame(rows).sort_values("year").reset_index(drop=True)
 
 ################################# Future Cost Projection ############################################
 # Update a parameter in a dataclass 
@@ -1558,9 +1649,9 @@ def run_tco_projection(
             "year": year,
 
             # ===== 5-year discounted TCO =====
-            "diesel_tco_5y_discounted": results["diesel"]["tco_5y_discounted"],
-            "betc_tco_5y_discounted": results["bet_c"]["tco_5y_discounted_recycle"],
-            "bets_tco_5y_discounted": results["bet_s"]["tco_5y_discounted_recycle"],
+            "diesel_tco_discounted": results["diesel"]["tco_discounted"],
+            "betc_tco_discounted": results["bet_c"]["tco_discounted_recycle"],
+            "bets_tco_discounted": results["bet_s"]["tco_discounted_recycle"],
 
             # ===== per km TCO =====
             "diesel_tco_per_km": results["diesel"]["tco_per_km_discounted"],
@@ -1589,58 +1680,751 @@ def run_tco_projection(
 
     return pd.DataFrame(rows)
 
+################## Visualisations #################################################################
+def plot_tco_comparison(results):
+    labels = ["Diesel", "BET-C", "BET-S"]
+    values = [
+        results["diesel"]["tco_discounted"],
+        results["bet_c"]["tco_discounted_recycle"],
+        results["bet_s"]["tco_discounted_recycle"],
+    ]
+
+    plt.figure()
+    bars = plt.bar(labels, values)
+
+    plt.title("Discounted TCO Comparison")
+    plt.ylabel("TCO (£)")
+    plt.xlabel("Truck Type")
+
+    for bar, v in zip(bars, values):
+        plt.text(
+            bar.get_x() + bar.get_width() / 2,
+            v,
+            f"{v:,.0f}",
+            ha="center",
+            va="bottom"
+        )
+
+    plt.tight_layout()
+    plt.show()
 
 
-def summarize_projection_uncertainty(df, metric_cols=None):
-    if metric_cols is None:
-        metric_cols = [
-            "diesel_tco_5y_discounted",
-            "betc_tco_5y_discounted",
-            "bets_tco_5y_discounted",
-        ]
+def plot_tco_gap(results):
+    labels = [
+        "BET-C - Diesel",
+        "BET-S - Diesel",
+        "BET-S - BET-C"
+    ]
 
+    bet_c_gap = (
+        results["bet_c"]["tco_discounted_recycle"]
+        - results["diesel"]["tco_discounted"]
+    )
+
+    bet_s_gap = (
+        results["bet_s"]["tco_discounted_recycle"]
+        - results["diesel"]["tco_discounted"]
+    )
+
+    bet_s_vs_bet_c_gap = (
+        results["bet_s"]["tco_discounted_recycle"]
+        - results["bet_c"]["tco_discounted_recycle"]
+    )
+
+    values = [bet_c_gap, bet_s_gap, bet_s_vs_bet_c_gap]
+
+    plt.figure()
+    bars = plt.bar(labels, values)
+
+    plt.title("TCO Gaps")
+    plt.ylabel("Difference (£)")
+    plt.xlabel("Comparison")
+    plt.axhline(0)
+
+    for bar, v in zip(bars, values):
+        if v >= 0:
+            va = "bottom"
+        else:
+            va = "top"
+        plt.text(
+            bar.get_x() + bar.get_width() / 2,
+            v,
+            f"{v:,.0f}",
+            ha="center",
+            va=va
+        )
+
+    plt.tight_layout()
+    plt.show()
+
+
+# Plot projected TCO
+def plot_tco_projection(df):
+    plt.figure(figsize=(10, 6))
+
+    plt.plot(df["year"], df["diesel_tco_discounted"], marker="o", label="Diesel")
+    plt.plot(df["year"], df["betc_tco_discounted"], marker="o", label="BET-C")
+    plt.plot(df["year"], df["bets_tco_discounted"], marker="o", label="BET-S")
+
+    plt.title("Projected Discounted TCO (2026-2040)")
+    plt.xlabel("Year")
+    plt.ylabel("Discounted TCO (£)")
+    plt.xticks(df["year"], rotation=45)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+def plot_tco_per_km_projection(df):
+    plt.figure(figsize=(10, 6))
+
+    plt.plot(df["year"], df["diesel_tco_per_km"], marker="o", label="Diesel")
+    plt.plot(df["year"], df["betc_tco_per_km"], marker="o", label="BET-C")
+    plt.plot(df["year"], df["bets_tco_per_km"], marker="o", label="BET-S")
+
+    plt.title("Projected Discounted TCO per km (2026-2040)")
+    plt.xlabel("Purchase Year")
+    plt.ylabel("Discounted TCO (£/km)")
+    plt.xticks(df["year"], rotation=45)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+def plot_tco_per_kwh_projection(df):
+    plt.figure(figsize=(10, 6))
+
+    plt.plot(df["year"], df["diesel_tco_per_kwh"], marker="o", label="Diesel")
+    plt.plot(df["year"], df["betc_tco_per_kwh"], marker="o", label="BET-C")
+    plt.plot(df["year"], df["bets_tco_per_kwh"], marker="o", label="BET-S")
+
+    plt.title("Projected Discounted TCO per kWh (2026-2040)")
+    plt.xlabel("Purchase Year")
+    plt.ylabel("Discounted TCO (£/kWh)")
+    plt.xticks(df["year"], rotation=45)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_sensitivity_bar(sensitivity_results, title=None):
+
+    name_map = {
+                "battery_price_per_kwh": "Battery price (£/kWh)",
+                "full_loaded_km_per_day": "Full-loaded daily mileage (km/day)",
+                "diesel_public_price_per_l": "Diesel price (£/L)",
+                "discount_rate": "Discount rate (%)",
+                "bet_depot_energy_price_per_kwh": "Electricity price (£/kWh)",
+    }
+            
+    labels = sensitivity_results["labels"]
+    bet_c_vs_diesel = sensitivity_results["bet_c_vs_diesel"]
+    bet_s_vs_diesel = sensitivity_results["bet_s_vs_diesel"]
+    bet_s_vs_bet_c = sensitivity_results["bet_s_vs_bet_c"]
+
+    x = range(len(labels))
+    width = 0.25
+
+    plt.figure(figsize=(10, 6))
+
+    bars1 = plt.bar(
+        [i - width for i in x],
+        bet_c_vs_diesel,
+        width=width,
+        label="BET-C - Diesel"
+    )
+    bars2 = plt.bar(
+        x,
+        bet_s_vs_diesel,
+        width=width,
+        label="BET-S - Diesel"
+    )
+    bars3 = plt.bar(
+        [i + width for i in x],
+        bet_s_vs_bet_c,
+        width=width,
+        label="BET-S - BET-C"
+    )
+
+    plt.axhline(0)
+    plt.xticks(list(x), labels)
+    plt.xlabel("Change from baseline")
+    plt.ylabel("TCO Gap (£)")
+
+    if title is None:
+        var_name = sensitivity_results["variable_name"]
+        base_value = sensitivity_results["base_value"]
+
+        display_name = name_map.get(var_name, var_name)
+
+        if "price" in var_name or "cost" in var_name:
+            base_str = f"£{base_value:.2f}"
+        elif "rate" in var_name:
+            base_str = f"{base_value*100:.1f}%"
+        elif "km" in var_name:
+            base_str = f"{base_value:.0f} km"
+        else:
+            base_str = f"{base_value}"
+
+        title = f"Sensitivity Analysis: {display_name} (base = {base_str})"
+
+    plt.title(title)
+
+    plt.legend()
+
+    for bars in [bars1, bars2, bars3]:
+        for bar in bars:
+            v = bar.get_height()
+            va = "bottom" if v >= 0 else "top"
+            plt.text(
+                bar.get_x() + bar.get_width() / 2,
+                v,
+                f"{v:,.0f}",
+                ha="center",
+                va=va,
+                fontsize=8
+            )
+
+    plt.tight_layout()
+    plt.show()
+
+# Summarize uncertainty results using percentiles for plots
+def summarize_margin_uncertainty(df):
     rows = []
 
-    for year, group in df.groupby("year"):
-        row = {"year": year}
-
-        for col in metric_cols:
-            row[f"{col}_p5"] = group[col].quantile(0.05)
-            row[f"{col}_p50"] = group[col].quantile(0.50)
-            row[f"{col}_p95"] = group[col].quantile(0.95)
-
-        rows.append(row)
-
-    return pd.DataFrame(rows).sort_values("year").reset_index(drop=True)
-
-# Rank the effects of those uncertainties
-def summarize_independent_effect_spread(df):
-    """
-    Optional summary table:
-    compare the spread caused by each variable independently.
-    """
-    rows = []
-
-    for var, group in df.groupby("variable"):
+    for margin, group in df.groupby("asset_manager_margin"):
         rows.append({
-            "variable": var,
+            "asset_manager_margin": margin,
 
-            "diesel_tco_iqr": group["diesel_tco"].quantile(0.75) - group["diesel_tco"].quantile(0.25),
-            "bet_c_tco_iqr": group["bet_c_tco"].quantile(0.75) - group["bet_c_tco"].quantile(0.25),
-            "bet_s_tco_iqr": group["bet_s_tco"].quantile(0.75) - group["bet_s_tco"].quantile(0.25),
+            "diesel_p5": group["diesel_tco_per_km"].quantile(0.05),
+            "diesel_p50": group["diesel_tco_per_km"].quantile(0.50),
+            "diesel_p95": group["diesel_tco_per_km"].quantile(0.95),
 
-            "gap_bet_c_diesel_iqr": group["gap_bet_c_diesel"].quantile(0.75) - group["gap_bet_c_diesel"].quantile(0.25),
-            "gap_bet_s_diesel_iqr": group["gap_bet_s_diesel"].quantile(0.75) - group["gap_bet_s_diesel"].quantile(0.25),
-            "gap_bet_s_bet_c_iqr": group["gap_bet_s_bet_c"].quantile(0.75) - group["gap_bet_s_bet_c"].quantile(0.25),
+            "bets_p5": group["bets_freight_all_in_per_km"].quantile(0.05),
+            "bets_p50": group["bets_freight_all_in_per_km"].quantile(0.50),
+            "bets_p95": group["bets_freight_all_in_per_km"].quantile(0.95),
+
+            "gap_p5": group["bets_minus_diesel_per_km"].quantile(0.05),
+            "gap_p50": group["bets_minus_diesel_per_km"].quantile(0.50),
+            "gap_p95": group["bets_minus_diesel_per_km"].quantile(0.95),
         })
 
-    out = pd.DataFrame(rows)
+    return pd.DataFrame(rows).sort_values("asset_manager_margin").reset_index(drop=True)
 
-    out["max_tco_iqr"] = out[["diesel_tco_iqr", "bet_c_tco_iqr", "bet_s_tco_iqr"]].max(axis=1)
-    out["max_gap_iqr"] = out[[
-        "gap_bet_c_diesel_iqr",
-        "gap_bet_s_diesel_iqr",
-        "gap_bet_s_bet_c_iqr"
-    ]].max(axis=1)
+# Plot margin vs cost with uncertainty bands
+def plot_margin_vs_freight_all_in_per_km_with_uncertainty(summary_df):
+    plt.figure(figsize=(10, 6))
 
-    return out.sort_values("max_gap_iqr", ascending=False).reset_index(drop=True)
+    x = summary_df["asset_manager_margin"] * 100
+
+    # Diesel
+    plt.plot(
+        x,
+        summary_df["diesel_p50"],
+        marker="o",
+        color="tab:blue",
+        label="Diesel truck TCO per km (median)"
+    )
+    plt.fill_between(
+        x,
+        summary_df["diesel_p5"],
+        summary_df["diesel_p95"],
+        color="tab:blue",
+        alpha=0.2
+    )
+
+    # BET-S AEaaS
+    plt.plot(
+        x,
+        summary_df["bets_p50"],
+        marker="o",
+        color="tab:green",
+        label="BET-S AEaaS cost per km (median)"
+    )
+    plt.fill_between(
+        x,
+        summary_df["bets_p5"],
+        summary_df["bets_p95"],
+        color="tab:green",
+        alpha=0.2
+    )
+
+    plt.xlabel("Asset-manager margin (%)")
+    plt.ylabel("Cost (£/km)")
+    plt.title("Impact of Asset-manager Margin on Freight Cost per km with Uncertainty")
+    plt.legend()
+    plt.text(
+        0.01, 0.98,
+        UNCERTAINTY_NOTE,
+        transform=plt.gca().transAxes,
+        ha="left",
+        va="top"
+    )
+    plt.tight_layout()
+    plt.show()
+
+# Plot margin vs cost gap with uncertainty bands
+def plot_margin_vs_gap_with_uncertainty(summary_df):
+    plt.figure(figsize=(10, 6))
+
+    x = summary_df["asset_manager_margin"] * 100
+
+    plt.plot(
+        x,
+        summary_df["gap_p50"],
+        marker="o",
+        label="BET-S AEaaS - Diesel (median)"
+    )
+    plt.fill_between(
+        x,
+        summary_df["gap_p5"],
+        summary_df["gap_p95"],
+        alpha=0.2
+    )
+
+    plt.axhline(0, linewidth=1)
+    plt.xlabel("Asset-manager margin (%)")
+    plt.ylabel("Cost Gap (£/km)")
+    plt.title("Effect of Asset-manager Margin on BET-S AEaaS - Diesel Gap with Uncertainty")
+    plt.legend()
+    plt.text(
+        0.01, 0.98,
+        UNCERTAINTY_NOTE,
+        transform=plt.gca().transAxes,
+        ha="left",
+        va="top"
+    )
+    plt.tight_layout()
+    plt.show()
+
+def plot_projection_with_uncertainty(summary_df):
+    plt.figure(figsize=(10, 6))
+
+    specs = [
+        ("diesel_tco_discounted", "Diesel", "tab:blue"),
+        ("betc_tco_discounted", "BET-C", "tab:orange"),
+        ("bets_tco_discounted", "BET-S", "tab:green"),
+    ]
+
+    for metric, label, color in specs:
+        years = summary_df["year"]
+        p5 = summary_df[f"{metric}_p5"]
+        p50 = summary_df[f"{metric}_p50"]
+        p95 = summary_df[f"{metric}_p95"]
+
+        plt.plot(years, p50, marker="o", color=color, label=f"{label} median")
+        plt.fill_between(years, p5, p95, color=color, alpha=0.2)
+
+    plt.title("Projected Discounted TCO with Uncertainty")
+    plt.xlabel("Purchase Year")
+    plt.ylabel("Discounted TCO (£)")
+    plt.xticks(summary_df["year"], rotation=45)
+    plt.legend()
+    plt.text(
+        0.01, 0.98,
+        UNCERTAINTY_NOTE,
+        transform=plt.gca().transAxes,
+        ha="left",
+        va="top"
+    )
+    plt.tight_layout()
+    plt.show()
+    
+
+
+
+def plot_monte_carlo_histograms(df):
+    histogram_specs = [
+        ("diesel_tco", "Monte Carlo: Diesel Truck Discounted TCO", "TCO (£)", "tab:blue"),
+        ("bet_c_tco", "Monte Carlo: BET-C Discounted TCO", "TCO (£)", "tab:orange"),
+        ("bet_s_tco", "Monte Carlo: BET-S Discounted TCO", "TCO (£)", "tab:green"),
+        ("gap_bet_c_diesel", "Monte Carlo: BET-C - Diesel", "TCO Gap (£)", "tab:purple"),
+        ("gap_bet_s_diesel", "Monte Carlo: BET-S - Diesel", "TCO Gap (£)", "tab:red"),
+        ("gap_bet_s_bet_c", "Monte Carlo: BET-S - BET-C", "TCO Gap (£)", "tab:brown"),
+    ]
+
+    for col, title, xlabel, color in histogram_specs:
+        plt.figure(figsize=(8, 5))
+        plt.hist(df[col], bins=20, color=color, )
+        plt.axvline(df[col].mean(), color = "black", linestyle="--", label="Mean")
+        plt.title(title)
+        plt.xlabel(xlabel)
+        plt.ylabel("Frequency")
+        plt.tight_layout()
+        plt.show()
+
+
+
+# Bar chart of the ranked driver correlations.
+def plot_drivers(driver_df, gap_name="BET-S - Diesel"):
+    labels = [get_pretty_label(v) for v in driver_df["variable"]]
+    values = driver_df["correlation_with_gap"]
+
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(labels, values)
+
+    plt.axhline(0)
+    plt.title(f"Drivers of {gap_name} Gap")
+    plt.xlabel("Input variable")
+    plt.ylabel("Correlation with the gap")
+    plt.xticks(rotation=30, ha="right")
+
+    for bar, v in zip(bars, values):
+        va = "bottom" if v >= 0 else "top"
+        plt.text(
+            bar.get_x() + bar.get_width() / 2,
+            v,
+            f"{v:.2f}",
+            ha="center",
+            va=va
+        )
+
+    plt.tight_layout()
+    plt.show()
+    
+##################### Boxplot Visualisation ####################################
+
+def plot_independent_tco_boxplots(df, figsize=(24, 8)):
+    """
+    One figure:
+    for each uncertain variable, show 3 boxplots:
+    Diesel / BET-C / BET-S
+    """
+    variable_order = list(df["variable"].drop_duplicates())
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    positions = []
+    data = []
+
+    gap_between_groups = 2.0
+    start = 1.0
+
+    group_centers = []
+    group_boundaries = []
+
+    for g, var in enumerate(variable_order):
+        base = start + g * (3 + gap_between_groups)
+
+        diesel_data = df.loc[df["variable"] == var, "diesel_tco"].dropna()
+        betc_data = df.loc[df["variable"] == var, "bet_c_tco"].dropna()
+        bets_data = df.loc[df["variable"] == var, "bet_s_tco"].dropna()
+
+        data.extend([diesel_data, betc_data, bets_data])
+        positions.extend([base, base + 1, base + 2])
+
+        # Name
+        group_centers.append(base + 1)
+
+        # Line
+        if g < len(variable_order) - 1:
+            next_base = start + (g + 1) * (3 + gap_between_groups)
+            boundary = (base + 2 + next_base) / 2
+            group_boundaries.append(boundary)
+
+    bp = ax.boxplot(
+        data,
+        positions=positions,
+        widths=0.6,
+        patch_artist=True,
+        showfliers=False,
+    )
+
+    
+    color_map = {
+        "diesel": "tab:blue",   
+        "betc": "tab:orange",     
+        "bets": "tab:green",     
+    }
+
+    colors = (
+        [color_map["diesel"], color_map["betc"], color_map["bets"]]
+        * len(variable_order)
+    )
+
+    for patch, color in zip(bp["boxes"], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+        patch.set_edgecolor("black")
+
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(2)
+        ax.set_xticks(group_centers)
+        pretty_labels = [get_pretty_label(v) for v in variable_order]
+        ax.set_xticklabels(pretty_labels, rotation=35, ha="right")
+        ax.set_ylabel("Discounted TCO (£)")
+        ax.set_title("Independent Impact of each Uncertain Variable on TCO")
+
+    for x in group_boundaries:
+        ax.axvline(x=x, linestyle="--", linewidth=1)
+    
+
+    legend_patches = [
+        mpatches.Patch(color=color_map["diesel"], label="Diesel"),
+        mpatches.Patch(color=color_map["betc"], label="BET-C"),
+        mpatches.Patch(color=color_map["bets"], label="BET-S"),
+    ]
+
+    ax.legend(handles=legend_patches, loc="upper right")
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_independent_gap_boxplots(df, figsize=(24, 8)):
+    """
+    One figure:
+    for each uncertain variable, show 3 gap boxplots:
+    BET-C - Diesel / BET-S - Diesel / BET-S - BET-C
+    """
+    variable_order = list(df["variable"].drop_duplicates())
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    positions = []
+    data = []
+    gap_between_groups = 2.0
+    start = 1.0
+
+    group_boundaries = []
+    group_centers = []
+
+    for g, var in enumerate(variable_order):
+        base = start + g * (3 + gap_between_groups)
+
+        gap1 = df.loc[df["variable"] == var, "gap_bet_c_diesel"].dropna()
+        gap2 = df.loc[df["variable"] == var, "gap_bet_s_diesel"].dropna()
+        gap3 = df.loc[df["variable"] == var, "gap_bet_s_bet_c"].dropna()
+
+        data.extend([gap1, gap2, gap3])
+        positions.extend([base, base + 1, base + 2])
+
+        # 每组中心位置
+        group_centers.append(base + 1)
+
+        # 分隔线位置：本组最后一个箱线和下一组第一个箱线的中点
+        if g < len(variable_order) - 1:
+            next_base = start + (g + 1) * (3 + gap_between_groups)
+            boundary = (base + 2 + next_base) / 2
+            group_boundaries.append(boundary)
+
+    bp = ax.boxplot(
+        data,
+        positions=positions,
+        widths=0.6,
+        patch_artist=True,
+        showfliers=False,
+    )
+
+
+    color_map = {
+        "betc_diesel": "tab:purple", 
+        "bets_diesel": "tab:red", 
+        "bets_betc": "tab:brown",
+    }
+
+    colors = (
+        [color_map["betc_diesel"], color_map["bets_diesel"], color_map["bets_betc"]]
+        * len(variable_order)
+    )
+
+    for patch, color in zip(bp["boxes"], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+        patch.set_edgecolor("black")
+
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(2)
+
+    ax.set_xticks(group_centers)
+    pretty_labels = [get_pretty_label(v) for v in variable_order]
+    ax.set_xticklabels(pretty_labels, rotation=35, ha="right")
+    ax.set_ylabel("TCO Gap (£)")
+    ax.set_title("Independent Impact of each Uncertain Variable on TCO Gaps")
+    ax.axhline(0, linewidth=1)
+
+    for x in group_boundaries:
+        ax.axvline(x=x, linestyle="--", linewidth=1)
+
+    legend_patches = [
+        mpatches.Patch(color=color_map["betc_diesel"], label="BET-C - Diesel"),
+        mpatches.Patch(color=color_map["bets_diesel"], label="BET-S - Diesel"),
+        mpatches.Patch(color=color_map["bets_betc"], label="BET-S - BET-C"),
+    ]
+    ax.legend(handles=legend_patches, loc="upper right")
+
+    ax.set_xlim(min(positions) - 1, max(positions) + 1)
+
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+def plot_independent_bets_vs_diesel_boxplot(df, figsize=(18, 7)):
+    """
+    One figure:
+    for each uncertain variable, show only BET-S - Diesel gap boxplot
+    """
+    exclude_vars = [
+        "bet_depot_energy_price_per_kwh",
+        "bet_public_energy_price_per_kwh",
+        "battery_capacity_kwh"
+    ]
+
+    variable_order = [
+        v for v in df["variable"].drop_duplicates()
+        if v not in exclude_vars
+    ]
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    data = []
+    positions = []
+
+    for i, var in enumerate(variable_order, start=1):
+        gap_data = df.loc[df["variable"] == var, "gap_bet_s_diesel"].dropna()
+        data.append(gap_data)
+        positions.append(i)
+
+    bp = ax.boxplot(
+        data,
+        positions=positions,
+        widths=0.6,
+        patch_artist=True,
+        showfliers=False,
+    )
+
+    for patch in bp["boxes"]:
+        patch.set_facecolor("tab:red")
+
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(2)
+        
+    ax.set_xticks(positions)
+    pretty_labels = [get_pretty_label(v) for v in variable_order]
+    ax.set_xticklabels(pretty_labels, rotation=35, ha="right")
+    ax.set_ylabel("BET-S - Diesel TCO Gap (£)")
+    ax.set_title("Independent Impact of each Uncertain Variable on BET-S - Diesel Gap")
+    ax.axhline(0, linewidth=1)
+
+    plt.tight_layout()
+    plt.show()
+
+###################### Summary Outputs ########################################################
+# Make the numbers readable
+def format_base_value(var, value):
+    if "price" in var or "cost" in var:
+        return f"£{value:.2f}"
+    elif "rate" in var:
+        return f"{value*100:.1f}%"
+    elif "km" in var:
+        return f"{value:.0f} km"
+    else:
+        return f"{value}"
+    
+# TCO results   
+def pretty_summary() -> str:
+    shared = SharedInputs()
+    diesel = compute_diesel(shared, DieselInputs())
+    bet_c = compute_bet_c(shared, BETCInputs(battery_recycle_ratio=shared.battery_recycle_value_ratio))
+    bet_s = compute_bet_s(shared, BETSInputs(battery_recycle_ratio=shared.battery_recycle_value_ratio))
+
+    lines = []
+    lines.append("Discounted TCO summary")
+    lines.append("-" * 40)
+    lines.append(
+        f"Diesel : £{diesel['tco_discounted']:,.2f} | "
+        f"£{diesel['tco_per_km_discounted']:.4f}/km | "
+        f"£{diesel['tco_per_kwh_discounted']:.4f}/kWh"
+    )
+    #lines.append(f"BET-C EO1L: £{bet_c['tco_discounted_eol']:,.2f} | £{bet_c['tco_per_km_discounted_eol']:.4f}/km")
+    lines.append(
+        f"BET-C  : £{bet_c['tco_discounted_recycle']:,.2f} | "
+        f"£{bet_c['tco_per_km_discounted_recycle']:.4f}/km | "
+        f"£{bet_c['tco_per_kwh_discounted_recycle']:.4f}/kWh"
+    )
+    #lines.append(f"BET-S EO1L: £{bet_s['tco_discounted_eol']:,.2f} | £{bet_s['tco_per_km_discounted_eol']:.4f}/km")
+    lines.append(
+        f"BET-S  : £{bet_s['tco_discounted_recycle']:,.2f} | "
+        f"£{bet_s['tco_per_km_discounted_recycle']:.4f}/km | "
+        f"£{bet_s['tco_per_kwh_discounted_recycle']:.4f}/kWh"
+    )
+    lines.append("")
+    lines.append("TCO gaps vs Diesel (discounted, Duration)")
+    #lines.append(f"BET-C EO1L - Diesel: £{bet_c['tco_discounted_eol'] - diesel['tco_discounted']:,.2f}")
+    lines.append(f"BET-C. - Diesel: £{bet_c['tco_discounted_recycle'] - diesel['tco_discounted']:,.2f}")
+    #lines.append(f"BET-S EO1L - Diesel: £{bet_s['tco_discounted_eol'] - diesel['tco_discounted']:,.2f}")
+    lines.append(f"BET-S. - Diesel: £{bet_s['tco_discounted_recycle'] - diesel['tco_discounted']:,.2f}")
+    lines.append(f"BET-S. - BET-C.: £{bet_s['tco_discounted_recycle'] - bet_c['tco_discounted_recycle']:,.2f}")
+    lines.append("")
+    return "\n".join(lines)
+
+# Generate AEaaS pricing and cost breakdown summary
+def pretty_aeaas_summary(results):
+    lines = []
+    lines.append("AEaaS cost summary for freight company")
+    lines.append("(BET-S only; 10% asset-manager margin; driver cost added back)")
+    lines.append("-" * 90)
+
+    r = results["bet_s"]
+
+    lines.append("BET-S")
+    lines.append(
+        f"  Asset & Energy sell price : £{r['price_per_km_with_margin']:.4f}/km | "
+        f"£{r['price_per_kwh_with_margin']:.4f}/kWh"
+    )
+    lines.append(
+        f"  Driver cost               : £{r['driver_cost_per_km']:.4f}/km | "
+        f"£{r['driver_cost_per_kwh']:.4f}/kWh"
+    )
+    lines.append(
+        f"  Freight all-in            : £{r['freight_total_cost_per_km']:.4f}/km | "
+        f"£{r['freight_total_cost_per_kwh']:.4f}/kWh"
+    )
+    lines.append(
+        f"  AEaaS total               : £{r['freight_total_cost_total']:,.2f}"
+    )
+    lines.append(
+        f"  Own TCO                   : £{r['tco_discounted_recycle']:,.2f}"
+    )
+    lines.append(
+        f"  Gap AEaaS - own TCO       : £{r['aas_gap_vs_own_tco']:,.2f}"
+    )
+    lines.append(
+        f"  AEaaS discounted glider   : £{r['discounted_glider_cost_for_aeaas']:,.2f}"
+    )
+    lines.append(
+        f"  AEaaS asset service cost  : £{r['aeaas_asset_service_cost_total']:,.2f}"
+    )
+
+    lines.append("")
+
+    return "\n".join(lines)
+
+# Format sensitivity results into readable text summary
+def pretty_sensitivity_summary(sensitivity_results) -> str:
+    lines = []
+    target_class_text = "+".join(sensitivity_results["target_class"])
+    lines.append(
+        f"Sensitivity analysis: {target_class_text}.{sensitivity_results['variable_name']}"
+    )
+    lines.append(f"Base value: {sensitivity_results['base_value']}")
+    lines.append("-" * 70)
+
+    for i, label in enumerate(sensitivity_results["labels"]):
+        lines.append(
+            f"{label:>5} | "
+            f"BET-C - Diesel: £{sensitivity_results['bet_c_vs_diesel'][i]:,.2f} | "
+            f"BET-S - Diesel: £{sensitivity_results['bet_s_vs_diesel'][i]:,.2f} | "
+            f"BET-S - BET-C: £{sensitivity_results['bet_s_vs_bet_c'][i]:,.2f}"
+        )
+
+    return "\n".join(lines)
+    
+
+
+
+
+
+######################################## The main processes of this code  ######################################################
