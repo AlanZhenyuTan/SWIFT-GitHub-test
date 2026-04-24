@@ -64,9 +64,9 @@ def fmt_gbp(value: float, decimals: int = 0) -> str:
     return f"£{value:,.{decimals}f}"
 
 
-def uncertainty_table(shared, diesel, betc, bets) -> pd.DataFrame:
+def uncertainty_table(shared, diesel, betc, bets, uncertainty_overrides=None) -> pd.DataFrame:
     rows = []
-    for spec in get_uncertainty_specs(shared, diesel, betc, bets):
+    for spec in get_uncertainty_specs(shared, diesel, betc, bets, uncertainty_overrides):
         mode = spec["mode"]
 
         if spec["variable"] == "discount_rate":
@@ -375,7 +375,7 @@ def run_baseline_cached(shared_dict, diesel_dict, betc_dict, bets_dict, asset_ma
 
 
 @st.cache_data(show_spinner=False)
-def run_mc_cached(n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_dict, bets_dict):
+def run_mc_cached(n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_dict, bets_dict, uncertainty_overrides):
     shared = SharedInputs(**shared_dict)
     diesel = DieselInputs(**diesel_dict)
     betc = BETCInputs(**betc_dict)
@@ -387,6 +387,7 @@ def run_mc_cached(n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_
         diesel_inp=diesel,
         betc_inp=betc,
         bets_inp=bets,
+        uncertainty_overrides=uncertainty_overrides,
     )
     summary_df, probability_df = summarize_monte_carlo_results(mc_df)
     driver_df = get_drivers_of_gap(
@@ -413,7 +414,7 @@ def run_mc_cached(n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_
 
 
 @st.cache_data(show_spinner=False)
-def run_independent_mc_cached(n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_dict, bets_dict):
+def run_independent_mc_cached(n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_dict, bets_dict, uncertainty_overrides):
     shared = SharedInputs(**shared_dict)
     diesel = DieselInputs(**diesel_dict)
     betc = BETCInputs(**betc_dict)
@@ -425,6 +426,7 @@ def run_independent_mc_cached(n_runs: int, random_seed: int, shared_dict, diesel
         diesel_inp=diesel,
         betc_inp=betc,
         bets_inp=bets,
+        uncertainty_overrides=uncertainty_overrides,
     )
     summary = summarize_independent_effect_spread(df)
     return df, summary
@@ -443,7 +445,7 @@ def run_projection_cached(shared_dict, diesel_dict, betc_dict, bets_dict, start_
 
 
 @st.cache_data(show_spinner=False)
-def run_projection_mc_cached(start_year: int, end_year: int, n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_dict, bets_dict):
+def run_projection_mc_cached(start_year: int, end_year: int, n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_dict, bets_dict, uncertainty_overrides):
     shared = SharedInputs(**shared_dict)
     diesel = DieselInputs(**diesel_dict)
     betc = BETCInputs(**betc_dict)
@@ -457,6 +459,7 @@ def run_projection_mc_cached(start_year: int, end_year: int, n_runs: int, random
         diesel_inp=diesel,
         betc_inp=betc,
         bets_inp=bets,
+        uncertainty_overrides=uncertainty_overrides,
     )
     summary = summarize_projection_uncertainty(
         df,
@@ -476,7 +479,7 @@ def run_projection_mc_cached(start_year: int, end_year: int, n_runs: int, random
 
 
 @st.cache_data(show_spinner=False)
-def run_margin_mc_cached(margins_tuple, n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_dict, bets_dict):
+def run_margin_mc_cached(margins_tuple, n_runs: int, random_seed: int, shared_dict, diesel_dict, betc_dict, bets_dict, uncertainty_overrides):
     shared = SharedInputs(**shared_dict)
     diesel = DieselInputs(**diesel_dict)
     betc = BETCInputs(**betc_dict)
@@ -489,6 +492,7 @@ def run_margin_mc_cached(margins_tuple, n_runs: int, random_seed: int, shared_di
         diesel_inp=diesel,
         betc_inp=betc,
         bets_inp=bets,
+        uncertainty_overrides=uncertainty_overrides,
     )
     return df, summarize_margin_uncertainty(df)
 
@@ -588,6 +592,40 @@ def build_inputs():
     return shared, diesel, betc, bets, asset_manager_margin
 
 
+def build_uncertainty_overrides(shared, diesel, betc, bets):
+    """Allow users to override Monte Carlo Min/Max bounds in the sidebar."""
+    overrides = {}
+
+    with st.sidebar.expander("Monte Carlo uncertainty ranges", expanded=False):
+        st.caption(
+            "Change Min/Max values used for triangular Monte Carlo sampling. "
+            "Mode still follows the current control input values."
+        )
+
+        default_specs = get_uncertainty_specs(shared, diesel, betc, bets)
+        for spec in default_specs:
+            var = spec["variable"]
+            label = get_pretty_label(var)
+
+            st.markdown(f"**{label}**")
+            col_min, col_max = st.columns(2)
+            left_value = col_min.number_input(
+                "Min",
+                value=float(spec["left"]),
+                key=f"uncertainty_min_{var}",
+                format="%.6f",
+            )
+            right_value = col_max.number_input(
+                "Max",
+                value=float(spec["right"]),
+                key=f"uncertainty_max_{var}",
+                format="%.6f",
+            )
+
+            overrides[var] = {"left": left_value, "right": right_value}
+
+    return overrides
+
 # -------------------------------
 # App layout
 # -------------------------------
@@ -595,6 +633,7 @@ st.title("Truck TCO Analysis")
 
 
 shared, diesel, betc, bets, asset_manager_margin = build_inputs()
+uncertainty_overrides = build_uncertainty_overrides(shared, diesel, betc, bets)
 with st.expander("All current model input values", expanded=False):
     input_values = {
         "SharedInputs": asdict(shared),
@@ -627,7 +666,7 @@ results = run_baseline_cached(asdict(shared), asdict(diesel), asdict(betc), asdi
 gaps = extract_tco_gaps(results)
 
 with st.expander("Monte Carlo simulation parameter ranges", expanded=False):
-    st.dataframe(uncertainty_table(shared, diesel, betc, bets), use_container_width=True, hide_index=True)
+    st.dataframe(uncertainty_table(shared, diesel, betc, bets, uncertainty_overrides), use_container_width=True, hide_index=True)
 
 st.divider()
 
@@ -636,7 +675,7 @@ mc_runs = 500
 mc_seed = 42
 
 with st.spinner("Running Monte Carlo simulation..."):
-    mc_df, mc_summary_df, mc_probability_df, driver_df = run_mc_cached(int(mc_runs), int(mc_seed), asdict(shared), asdict(diesel), asdict(betc), asdict(bets))
+    mc_df, mc_summary_df, mc_probability_df, driver_df = run_mc_cached(int(mc_runs), int(mc_seed), asdict(shared), asdict(diesel), asdict(betc), asdict(bets), uncertainty_overrides)
 st.pyplot(fig_monte_carlo_histograms(mc_df), use_container_width=True)
 st.pyplot(fig_driver_bar(driver_df), use_container_width=True)
 with st.expander("Summary and probability tables", expanded=False):
@@ -652,7 +691,7 @@ ind_runs = 500
 ind_seed = 42
 
 with st.spinner("Running independent-variable Monte Carlo..."):
-    indep_df, indep_summary_df = run_independent_mc_cached(int(ind_runs), int(ind_seed), asdict(shared), asdict(diesel), asdict(betc), asdict(bets))
+    indep_df, indep_summary_df = run_independent_mc_cached(int(ind_runs), int(ind_seed), asdict(shared), asdict(diesel), asdict(betc), asdict(bets), uncertainty_overrides)
     # Always show this one
 st.pyplot(
     fig_independent_bets_vs_diesel_boxplot(indep_df),
@@ -688,7 +727,7 @@ with st.expander("Projected input/output table", expanded=False):
 
 
 with st.spinner("Running projection Monte Carlo..."):
-    projection_mc_df, projection_summary_df = run_projection_mc_cached(int(start_year), int(end_year), int(proj_runs), 42, asdict(shared), asdict(diesel), asdict(betc), asdict(bets))
+    projection_mc_df, projection_summary_df = run_projection_mc_cached(int(start_year), int(end_year), int(proj_runs), 42, asdict(shared), asdict(diesel), asdict(betc), asdict(bets), uncertainty_overrides)
 col1, col2 = st.columns(2)
 with col1:
     st.pyplot(fig_projection_uncertainty(projection_summary_df, "tco_discounted", "Projected TCO with Uncertainty", "TCO (£)"), use_container_width=True)
@@ -709,7 +748,7 @@ except ValueError:
 
 if margin_tuple:
     with st.spinner("Running AEaaS margin uncertainty..."):
-        margin_uncertainty_df, margin_summary_df = run_margin_mc_cached(margin_tuple, int(margin_runs), 42, asdict(shared), asdict(diesel), asdict(betc), asdict(bets))
+        margin_uncertainty_df, margin_summary_df = run_margin_mc_cached(margin_tuple, int(margin_runs), 42, asdict(shared), asdict(diesel), asdict(betc), asdict(bets), uncertainty_overrides)
     st.pyplot(fig_margin_cost(margin_summary_df), use_container_width=True)
     with st.expander("AEaaS margin summary table", expanded=False):
         st.dataframe(margin_summary_df, use_container_width=True)

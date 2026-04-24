@@ -674,6 +674,7 @@ def run_margin_sweep_with_uncertainty(
     diesel_inp=None,
     betc_inp=None,
     bets_inp=None,
+    uncertainty_overrides=None,
 ):
     if shared is None:
         shared = SharedInputs()
@@ -689,7 +690,7 @@ def run_margin_sweep_with_uncertainty(
         )
 
     rng = np.random.default_rng(random_seed)
-    specs = get_uncertainty_specs(shared, diesel_inp, betc_inp, bets_inp)
+    specs = get_uncertainty_specs(shared, diesel_inp, betc_inp, bets_inp, uncertainty_overrides)
     rows = []
 
     for margin in margins:
@@ -935,8 +936,39 @@ def sample_triangular(left, mode, right, rng):
 # Independent-effect Monte Carlo for one-at-a-time boxplots
 # =========================================================
 
+
+def _apply_uncertainty_overrides(specs, uncertainty_overrides=None):
+    """
+    Override the Min/Max bounds of Monte Carlo uncertainty specs.
+
+    The Mode is still taken from the current model inputs. If a user-entered
+    bound crosses the Mode, it is adjusted so np.random.triangular remains valid.
+    """
+    if not uncertainty_overrides:
+        return specs
+
+    updated_specs = []
+    for spec in specs:
+        spec_i = dict(spec)
+        override = uncertainty_overrides.get(spec_i["variable"], {}) if isinstance(uncertainty_overrides, dict) else {}
+
+        if "left" in override and override["left"] is not None:
+            spec_i["left"] = float(override["left"])
+        if "right" in override and override["right"] is not None:
+            spec_i["right"] = float(override["right"])
+
+        # Keep triangular distribution valid: left <= mode <= right
+        if spec_i["left"] > spec_i["mode"]:
+            spec_i["left"] = spec_i["mode"]
+        if spec_i["right"] < spec_i["mode"]:
+            spec_i["right"] = spec_i["mode"]
+
+        updated_specs.append(spec_i)
+
+    return updated_specs
+
 # Define uncertain variables and their distributions
-def get_uncertainty_specs(shared=None, diesel_inp=None, betc_inp=None, bets_inp=None):
+def get_uncertainty_specs(shared=None, diesel_inp=None, betc_inp=None, bets_inp=None, uncertainty_overrides=None):
     """
     Define uncertain variables and triangular distributions.
 
@@ -987,7 +1019,7 @@ def get_uncertainty_specs(shared=None, diesel_inp=None, betc_inp=None, bets_inp=
     subsidy_mode = shared.bet_subsidy
     subsidy_right = max(120000.0, subsidy_mode * 1.2)
 
-    return [
+    specs = [
         {"variable": "discount_rate", "target_class": "shared", "left": discount_left, "mode": discount_mode, "right": discount_right},
         {"variable": "full_loaded_km_per_day", "target_class": "shared", "left": vkt_left, "mode": vkt_mode, "right": vkt_right},
         {"variable": "peak_price_per_kwh", "target_class": "shared", "left": peak_left, "mode": peak_mode, "right": peak_right},
@@ -1003,6 +1035,8 @@ def get_uncertainty_specs(shared=None, diesel_inp=None, betc_inp=None, bets_inp=
         {"variable": "battery_capacity_kwh", "target_class": "betc", "left": cap_left, "mode": cap_mode, "right": cap_right},
         {"variable": "bet_subsidy", "target_class": "shared", "left": subsidy_left, "mode": subsidy_mode, "right": subsidy_right},
     ]
+
+    return _apply_uncertainty_overrides(specs, uncertainty_overrides)
 
 # Apply one uncertain variable change for calculations
 def apply_single_variable_change(shared, diesel_inp, betc_inp, bets_inp, spec, sampled_value):
@@ -1043,6 +1077,7 @@ def run_independent_variable_monte_carlo(
     diesel_inp=None,
     betc_inp=None,
     bets_inp=None,
+    uncertainty_overrides=None,
 ):
     """
     For each uncertain variable:
@@ -1065,7 +1100,7 @@ def run_independent_variable_monte_carlo(
         )
 
     rng = np.random.default_rng(random_seed)
-    specs = get_uncertainty_specs(shared, diesel_inp, betc_inp, bets_inp)
+    specs = get_uncertainty_specs(shared, diesel_inp, betc_inp, bets_inp, uncertainty_overrides)
 
     rows = []
 
@@ -1106,6 +1141,7 @@ def run_monte_carlo_simulation(
     diesel_inp=None,
     betc_inp=None,
     bets_inp=None,
+    uncertainty_overrides=None,
 ):
     if shared is None:
         shared = SharedInputs()
@@ -1121,7 +1157,7 @@ def run_monte_carlo_simulation(
         )
 
     rng = np.random.default_rng(random_seed)
-    specs = get_uncertainty_specs(shared, diesel_inp, betc_inp, bets_inp)
+    specs = get_uncertainty_specs(shared, diesel_inp, betc_inp, bets_inp, uncertainty_overrides)
     rows = []
 
     for i in range(n_runs):
@@ -1211,6 +1247,7 @@ def run_projection_monte_carlo(
     diesel_inp=None,
     betc_inp=None,
     bets_inp=None,
+    uncertainty_overrides=None,
 ):
     """
     For each purchase year:
@@ -1244,135 +1281,19 @@ def run_projection_monte_carlo(
             bets_inp=bets_inp,
         )
 
+        specs = get_uncertainty_specs(shared_base, diesel_base, betc_base, bets_base, uncertainty_overrides)
+
         for i in range(n_runs):
-            # ===== sample around projected-year baseline =====
-            sampled_discount_rate = sample_triangular(
-                shared_base.discount_rate * 0.8,
-                shared_base.discount_rate,
-                shared_base.discount_rate * 1.2,
-                rng
-            )
-
-            sampled_full_loaded_km_per_day = sample_triangular(
-                shared_base.full_loaded_km_per_day * 0.8,
-                shared_base.full_loaded_km_per_day,
-                shared_base.full_loaded_km_per_day * 1.2,
-                rng
-            )
-
-            sampled_peak_price_per_kwh = sample_triangular(
-                shared_base.peak_price_per_kwh * 0.8,
-                shared_base.peak_price_per_kwh,
-                shared_base.peak_price_per_kwh * 1.2,
-                rng
-            )
-
-            sampled_off_peak_share = sample_triangular(
-                max(0.0, shared_base.off_peak_share * 0.6),
-                shared_base.off_peak_share,
-                min(1.0, shared_base.off_peak_share * 1.4),
-                rng
-            )
-
-            sampled_bet_depot_energy_price_per_kwh = sample_triangular(
-                shared_base.bet_depot_energy_price_per_kwh * 0.8,
-                shared_base.bet_depot_energy_price_per_kwh,
-                shared_base.bet_depot_energy_price_per_kwh * 1.25,
-                rng
-            )
-
-            sampled_bet_public_energy_price_per_kwh = sample_triangular(
-                shared_base.bet_public_energy_price_per_kwh * 0.8,
-                shared_base.bet_public_energy_price_per_kwh,
-                shared_base.bet_public_energy_price_per_kwh * 1.25,
-                rng
-            )
-
-            sampled_full_loaded_kwh_per_km_year1 = sample_triangular(
-                betc_base.full_loaded_kwh_per_km_year1 * 0.88,
-                betc_base.full_loaded_kwh_per_km_year1,
-                betc_base.full_loaded_kwh_per_km_year1 * 1.13,
-                rng
-            )
-
-            sampled_glider_capex = sample_triangular(
-                betc_base.glider_capex * 0.8,
-                betc_base.glider_capex,
-                betc_base.glider_capex * 1.2,
-                rng
-            )
-
-            sampled_battery_price_per_kwh = sample_triangular(
-                betc_base.battery_price_per_kwh * 0.8,
-                betc_base.battery_price_per_kwh,
-                betc_base.battery_price_per_kwh * 1.2,
-                rng
-            )
-
-            sampled_battery_recycle_ratio = sample_triangular(
-                max(0.0, betc_base.battery_recycle_ratio * 0.5),
-                betc_base.battery_recycle_ratio,
-                min(1.0, betc_base.battery_recycle_ratio * 2.0),
-                rng
-            )
-
-            sampled_battery_lifetime_cycles = sample_triangular(
-                betc_base.battery_lifetime_cycles * 0.8,
-                betc_base.battery_lifetime_cycles,
-                betc_base.battery_lifetime_cycles * 1.3,
-                rng
-            )
-
-            sampled_unladen_energy_saving = sample_triangular(
-                max(0.0, betc_base.unladen_energy_saving * 0.8),
-                betc_base.unladen_energy_saving,
-                min(1.0, betc_base.unladen_energy_saving * 1.2),
-                rng
-            )
-
-            sampled_battery_capacity_kwh = sample_triangular(
-                betc_base.battery_capacity_kwh * 0.65,
-                betc_base.battery_capacity_kwh,
-                betc_base.battery_capacity_kwh * 1.29,
-                rng
-            )
-            
-            sampled_bet_subsidy = sample_triangular(0.0, shared_base.bet_subsidy, max(120000.0, shared_base.bet_subsidy * 1.2), rng)
-            
-            # ===== build sampled inputs =====
-            shared_i = replace(
-                shared_base,
-                discount_rate=sampled_discount_rate,
-                full_loaded_km_per_day=sampled_full_loaded_km_per_day,
-                peak_price_per_kwh=sampled_peak_price_per_kwh,
-                off_peak_share=sampled_off_peak_share,
-                bet_depot_energy_price_per_kwh=sampled_bet_depot_energy_price_per_kwh,
-                bet_public_energy_price_per_kwh=sampled_bet_public_energy_price_per_kwh,
-                bet_subsidy=sampled_bet_subsidy,
-            )
-
+            shared_i = shared_base
             diesel_i = diesel_base
+            betc_i = betc_base
+            bets_i = bets_base
 
-            betc_i = replace(
-                betc_base,
-                glider_capex=sampled_glider_capex,
-                battery_price_per_kwh=sampled_battery_price_per_kwh,
-                battery_recycle_ratio=sampled_battery_recycle_ratio,
-                battery_lifetime_cycles=sampled_battery_lifetime_cycles,
-                unladen_energy_saving=sampled_unladen_energy_saving,
-                full_loaded_kwh_per_km_year1=sampled_full_loaded_kwh_per_km_year1,
-                battery_capacity_kwh=sampled_battery_capacity_kwh,
-            )
-
-            bets_i = replace(
-                bets_base,
-                glider_capex=sampled_glider_capex,
-                battery_price_per_kwh=sampled_battery_price_per_kwh,
-                battery_recycle_ratio=sampled_battery_recycle_ratio,
-                battery_lifetime_cycles=sampled_battery_lifetime_cycles,
-                unladen_energy_saving=sampled_unladen_energy_saving,
-                full_loaded_kwh_per_km_year1=sampled_full_loaded_kwh_per_km_year1,
-            )
+            for spec in specs:
+                sampled_value = sample_triangular(spec["left"], spec["mode"], spec["right"], rng)
+                shared_i, diesel_i, betc_i, bets_i = apply_single_variable_change(
+                    shared_i, diesel_i, betc_i, bets_i, spec, sampled_value
+                )
 
             results = run_model(
                 shared=shared_i,
