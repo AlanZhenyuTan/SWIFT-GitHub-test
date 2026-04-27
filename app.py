@@ -139,6 +139,32 @@ def fig_tco_gap(gaps):
     fig.tight_layout()
     return fig
 
+def fig_tco_per_km_comparison(results):
+    labels = ["Diesel", "BET-C", "BET-S"]
+    values = [
+        results["diesel"]["tco_per_km_discounted"],
+        results["bet_c"]["tco_per_km_discounted_recycle"],
+        results["bet_s"]["tco_per_km_discounted_recycle"],
+    ]
+
+    fig, ax = plt.subplots(figsize=(7.5, 4.6))
+    bars = ax.bar(labels, values, color=["tab:blue", "tab:orange", "tab:green"])
+
+
+    ax.set_title("Discounted TCO per km Comparison")
+    ax.set_ylabel("TCO (£/km)")
+
+    for bar, v in zip(bars, values):
+        ax.text(
+            bar.get_x() + bar.get_width()/2,
+            v,
+            f"{v:.2f}",
+            ha="center",
+            va="bottom"
+        )
+
+    plt.tight_layout()
+    return fig
 
 def fig_monte_carlo_histograms(df: pd.DataFrame):
     specs = [
@@ -669,7 +695,7 @@ st.divider()
 
 st.markdown("### Deterministic TCO results")
 
-col1, col2 = st.columns(2)
+col1, col2 , col3 = st.columns(3)
 
 with col1:
     st.pyplot(
@@ -680,6 +706,12 @@ with col1:
 with col2:
     st.pyplot(
         fig_tco_gap(gaps),
+        use_container_width=True
+    )
+
+with col3:
+    st.pyplot(
+        fig_tco_per_km_comparison(results),
         use_container_width=True
     )
 
