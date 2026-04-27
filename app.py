@@ -117,7 +117,7 @@ def fig_tco_comparison(results):
     ]
     fig, ax = plt.subplots(figsize=(7.5, 4.6))
     bars = ax.bar(labels, values, color=["tab:blue", "tab:orange", "tab:green"])
-    ax.set_title("5-year discounted TCO comparison")
+    ax.set_title("Discounted TCO comparison")
     ax.set_ylabel("TCO (£)")
     for bar, value in zip(bars, values):
         ax.text(bar.get_x() + bar.get_width() / 2, value, f"{value:,.0f}", ha="center", va="bottom", fontsize=9)
@@ -131,7 +131,7 @@ def fig_tco_gap(gaps):
     fig, ax = plt.subplots(figsize=(7.5, 4.6))
     bars = ax.bar(labels, values, color=["tab:purple", "tab:red", "tab:brown"])
     ax.axhline(0, color="black", linewidth=1)
-    ax.set_title("5-year discounted TCO gaps")
+    ax.set_title("Discounted TCO gaps")
     ax.set_ylabel("TCO gap (£)")
     ax.tick_params(axis="x", rotation=15)
     for bar, value in zip(bars, values):
@@ -665,10 +665,28 @@ with st.expander("All current model input values", expanded=False):
 results = run_baseline_cached(asdict(shared), asdict(diesel), asdict(betc), asdict(bets), asset_manager_margin)
 gaps = extract_tco_gaps(results)
 
-with st.expander("Monte Carlo simulation parameter ranges", expanded=False):
-    st.dataframe(uncertainty_table(shared, diesel, betc, bets, uncertainty_overrides), use_container_width=True, hide_index=True)
+st.divider()
+
+st.markdown("### Deterministic TCO results")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.pyplot(
+        fig_tco_comparison(results),
+        use_container_width=True
+    )
+
+with col2:
+    st.pyplot(
+        fig_tco_gap(gaps),
+        use_container_width=True
+    )
 
 st.divider()
+
+with st.expander("Monte Carlo simulation parameter ranges", expanded=False):
+    st.dataframe(uncertainty_table(shared, diesel, betc, bets, uncertainty_overrides), use_container_width=True, hide_index=True)
 
 st.markdown("### TCO Results")
 mc_runs = 500
