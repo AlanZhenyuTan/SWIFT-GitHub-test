@@ -688,7 +688,7 @@ st.divider()
 with st.expander("Monte Carlo simulation parameter ranges", expanded=False):
     st.dataframe(uncertainty_table(shared, diesel, betc, bets, uncertainty_overrides), use_container_width=True, hide_index=True)
 
-st.markdown("### TCO Results")
+st.markdown("### TCO Results with Uncertainty")
 mc_runs = 500
 mc_seed = 42
 
@@ -731,7 +731,7 @@ with st.expander("Independent-variable spread ranking", expanded=False):
     st.dataframe(indep_summary_df, use_container_width=True)
 
 st.divider()
-st.markdown("### TCO Projection")
+st.markdown("### TCO Projection with Uncertainty")
 
 
 start_year = 2026
