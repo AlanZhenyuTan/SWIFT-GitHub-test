@@ -1382,6 +1382,7 @@ def summarize_projection_uncertainty(df, metric_cols=None):
             row[f"{col}_p5"] = group[col].quantile(0.05)
             row[f"{col}_p50"] = group[col].quantile(0.50)
             row[f"{col}_p95"] = group[col].quantile(0.95)
+            row[f"{col}_mean"] = group[col].mean()
 
         rows.append(row)
 

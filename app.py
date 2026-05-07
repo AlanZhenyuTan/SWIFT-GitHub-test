@@ -239,12 +239,37 @@ def fig_independent_tco_boxplots(df: pd.DataFrame):
     for median in bp["medians"]:
         median.set_color("black")
         median.set_linewidth(1.7)
+
+        means = [np.mean(d) for d in data]
+
+        ax.scatter(
+            positions,
+            means,
+            color="tab:blue",
+            marker="D",
+            s=40,
+            zorder=3
+        )
     for x in boundaries:
         ax.axvline(x=x, linestyle="--", linewidth=0.8, color="gray", alpha=0.5)
     ax.set_xticks(centers)
     ax.set_xticklabels([get_pretty_label(v) for v in variable_order], rotation=35, ha="right")
     ax.set_ylabel("Discounted TCO (£)")
-    ax.set_title("Independent one-at-a-time effect on TCO")
+    ax.set_title("Independent Impact of each Uncertain Variable on TCO")
+    ax.text(
+        0.02,
+        0.05,
+        "Black line in the boxes = median\nBlue diamond = mean",
+        transform=ax.transAxes,
+        fontsize=10,
+        va="bottom",
+        ha="left",
+        bbox=dict(
+            facecolor="white",
+            alpha=0.8,
+            edgecolor="none"
+        )
+    )
     ax.legend(handles=[
         mpatches.Patch(color="tab:blue", label="Diesel"),
         mpatches.Patch(color="tab:orange", label="BET-C"),
@@ -280,13 +305,38 @@ def fig_independent_gap_boxplots(df: pd.DataFrame):
     for median in bp["medians"]:
         median.set_color("black")
         median.set_linewidth(1.7)
+
+        means = [np.mean(d) for d in data]
+
+        ax.scatter(
+            positions,
+            means,
+            color="tab:blue",
+            marker="D",
+            s=40,
+            zorder=3
+        )
     for x in boundaries:
         ax.axvline(x=x, linestyle="--", linewidth=0.8, color="gray", alpha=0.5)
     ax.axhline(0, color="black", linewidth=1)
     ax.set_xticks(centers)
     ax.set_xticklabels([get_pretty_label(v) for v in variable_order], rotation=35, ha="right")
     ax.set_ylabel("TCO gap (£)")
-    ax.set_title("Independent one-at-a-time effect on TCO gaps")
+    ax.set_title("Independent Impact of each Uncertain Variable on TCO gaps")
+    ax.text(
+        0.02,
+        0.05,
+        "Black line in the boxes = median\nBlue diamond = mean",
+        transform=ax.transAxes,
+        fontsize=10,
+        va="bottom",
+        ha="left",
+        bbox=dict(
+            facecolor="white",
+            alpha=0.8,
+            edgecolor="none"
+        )
+    )
     ax.legend(handles=[
         mpatches.Patch(color="tab:purple", label="BET-C - Diesel"),
         mpatches.Patch(color="tab:red", label="BET-S - Diesel"),
@@ -311,11 +361,36 @@ def fig_independent_bets_vs_diesel_boxplot(df: pd.DataFrame):
     for median in bp["medians"]:
         median.set_color("black")
         median.set_linewidth(1.7)
+
+        means = [np.mean(d) for d in data]
+
+        ax.scatter(
+            positions,
+            means,
+            color="tab:blue",
+            marker="D",
+            s=40,
+            zorder=3
+        )
     ax.axhline(0, color="black", linewidth=1)
+    ax.text(
+        0.02,
+        0.05,
+        "Black line in the boxes = median\nBlue diamond = mean",
+        transform=ax.transAxes,
+        fontsize=10,
+        va="bottom",
+        ha="left",
+        bbox=dict(
+            facecolor="white",
+            alpha=0.8,
+            edgecolor="none"
+        )
+    )
     ax.set_xticks(positions)
     ax.set_xticklabels([get_pretty_label(v) for v in variable_order], rotation=35, ha="right")
     ax.set_ylabel("BET-S - Diesel TCO gap (£)")
-    ax.set_title("Independent one-at-a-time effect on BET-S - Diesel gap")
+    ax.set_title("Independent Impact of each Uncertain Variable on BET-S - Diesel gap")
     fig.tight_layout()
     return fig
 
@@ -323,24 +398,57 @@ def fig_independent_bets_vs_diesel_boxplot(df: pd.DataFrame):
 def fig_projection(df: pd.DataFrame, ycols: list[str], labels: list[str], title: str, ylabel: str):
     fig, ax = plt.subplots(figsize=(10, 5.2))
     for col, label in zip(ycols, labels):
-        ax.plot(df["year"], df[col], marker="o", linewidth=2, label=label)
+        ax.plot(
+            df["year"],
+            df[col],
+            marker="o",
+            linewidth=2,
+            label=label
+        )
+
     ax.set_title(title)
     ax.set_xlabel("Purchase year")
     ax.set_ylabel(ylabel)
     ax.set_xticks(df["year"])
     ax.tick_params(axis="x", rotation=45)
     ax.legend()
+
     fig.tight_layout()
     return fig
 
 
 def fig_projection_uncertainty(summary_df: pd.DataFrame, metric_base: str, title: str, ylabel: str):
-    specs = [("diesel", "Diesel"), ("betc", "BET-C"), ("bets", "BET-S")]
+    specs = [("diesel", "Diesel", "tab:blue"), ("betc", "BET-C", "tab:orange"), ("bets", "BET-S", "tab:green")]
     fig, ax = plt.subplots(figsize=(10, 5.4))
-    for prefix, label in specs:
+    for prefix, label, color in specs:
         metric = f"{prefix}_{metric_base}"
-        ax.plot(summary_df["year"], summary_df[f"{metric}_p50"], marker="o", linewidth=2, label=f"{label} median")
-        ax.fill_between(summary_df["year"], summary_df[f"{metric}_p5"], summary_df[f"{metric}_p95"], alpha=0.18)
+        ax.plot(
+            summary_df["year"],
+            summary_df[f"{metric}_p50"],
+            marker="o",
+            color=color,
+            linewidth=2,
+            label=f"{label} median"
+        )
+
+        ax.plot(
+            summary_df["year"],
+            summary_df[f"{metric}_mean"],
+            linestyle="--",
+            color=color,
+            linewidth=2,
+            alpha=0.9,
+            label=f"{label} mean"
+        )
+
+        ax.fill_between(
+            summary_df["year"],
+            summary_df[f"{metric}_p5"],
+            summary_df[f"{metric}_p95"],
+            color=color,
+            alpha=0.18
+        )
+
     ax.set_title(title)
     ax.set_xlabel("Purchase year")
     ax.set_ylabel(ylabel)
@@ -360,12 +468,17 @@ def summarize_margin_uncertainty(df: pd.DataFrame) -> pd.DataFrame:
                 "diesel_p5": group["diesel_tco_per_km"].quantile(0.05),
                 "diesel_p50": group["diesel_tco_per_km"].quantile(0.50),
                 "diesel_p95": group["diesel_tco_per_km"].quantile(0.95),
+                "diesel_mean": group["diesel_tco_per_km"].mean(),
+
                 "bets_p5": group["bets_freight_all_in_per_km"].quantile(0.05),
                 "bets_p50": group["bets_freight_all_in_per_km"].quantile(0.50),
                 "bets_p95": group["bets_freight_all_in_per_km"].quantile(0.95),
+                "bets_mean": group["bets_freight_all_in_per_km"].mean(),
+
                 "gap_p5": group["bets_minus_diesel_per_km"].quantile(0.05),
                 "gap_p50": group["bets_minus_diesel_per_km"].quantile(0.50),
                 "gap_p95": group["bets_minus_diesel_per_km"].quantile(0.95),
+                "gap_mean": group["bets_minus_diesel_per_km"].mean(),
             }
         )
     return pd.DataFrame(rows).sort_values("asset_manager_margin").reset_index(drop=True)
@@ -374,10 +487,28 @@ def summarize_margin_uncertainty(df: pd.DataFrame) -> pd.DataFrame:
 def fig_margin_cost(summary_df: pd.DataFrame):
     x = summary_df["asset_manager_margin"] * 100
     fig, ax = plt.subplots(figsize=(10, 5.4))
-    ax.plot(x, summary_df["diesel_p50"], marker="o", linewidth=2, label="Diesel Truck TCO per km")
+    ax.plot(x, summary_df["diesel_p50"], marker="o", color="tab:blue", linewidth=2, label="Diesel Truck TCO per km median")
+    ax.plot(
+        x,
+        summary_df["diesel_mean"],
+        linestyle="--",
+        linewidth=2,
+        color="tab:blue",
+        alpha=0.9,
+        label="Diesel Truck TCO per km mean"
+    )
     ax.fill_between(x, summary_df["diesel_p5"], summary_df["diesel_p95"], alpha=0.18)
-    ax.plot(x, summary_df["bets_p50"], marker="o", color="tab:green", linewidth=2, label="BET-S AEaaS Cost per km")
+    ax.plot(x, summary_df["bets_p50"], marker="o", color="tab:green", linewidth=2, label="BET-S AEaaS Cost per km median")
     ax.fill_between(x, summary_df["bets_p5"], summary_df["bets_p95"],color="tab:green", alpha=0.18)
+    ax.plot(
+        x,
+        summary_df["bets_mean"],
+        linestyle="--",
+        linewidth=2,
+        color="tab:green",
+        alpha=0.9,
+        label="BET-S AEaaS Cost per km mean"
+    )
     ax.set_title("AEaaS margin and freight cost per km")
     ax.set_xlabel("Asset-manager margin (%)")
     ax.set_ylabel("Cost (£/km)")
@@ -615,6 +746,20 @@ def build_inputs():
         battery_lifetime_cycles=battery_lifetime_cycles,
         battery_recycle_ratio=battery_recycle_ratio
     )
+    cycle_usage_ratio = (
+        shared.operational_days_per_year
+        * shared.years
+        / betc.battery_lifetime_cycles
+    )
+
+    if cycle_usage_ratio > 1:
+        st.sidebar.warning(
+            f"Battery cycle usage / battery lifetime cycles = {cycle_usage_ratio:.2f} (> 1.0).\n\n"
+            "Current product of analysis_years and operational_days implies battery cycle use exceeds battery_lifetime_cycles.\n\n"
+            "Battery replacement is not considered in this model, "
+            "so battery residual results may become unrealistic."
+        )
+
     return shared, diesel, betc, bets, asset_manager_margin
 
 
@@ -625,7 +770,8 @@ def build_uncertainty_overrides(shared, diesel, betc, bets):
     with st.sidebar.expander("Monte Carlo uncertainty ranges", expanded=False):
         st.caption(
             "Change Min/Max values used for triangular Monte Carlo sampling. "
-            "Mode still follows the current control input values."
+            "Mode still follows the current control input values. "
+            "Input requirement: Min ≤ Your/Default input < Max"
         )
 
         default_specs = get_uncertainty_specs(shared, diesel, betc, bets)
@@ -641,9 +787,16 @@ def build_uncertainty_overrides(shared, diesel, betc, bets):
                 key=f"uncertainty_min_{var}",
                 format="%.6f",
             )
+            mode_value = float(spec["mode"])
+            right_min_value = (
+                0.01
+                if var == "bet_subsidy" and mode_value == 0
+                else 0.0
+            )
             right_value = col_max.number_input(
                 "Max",
-                value=float(spec["right"]),
+                min_value=right_min_value,
+                value=max(float(spec["right"]), right_min_value),
                 key=f"uncertainty_max_{var}",
                 format="%.6f",
             )
@@ -736,7 +889,7 @@ with st.expander("Summary and probability tables", expanded=False):
 
 st.divider()
 
-st.markdown("### Independent one-at-a-time Monte Carlo")
+st.markdown("### Independent Impact of each Variable with Monte Carlo Uncertainty")
 ind_runs = 500
 ind_seed = 42
 
