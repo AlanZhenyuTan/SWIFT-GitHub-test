@@ -181,7 +181,7 @@ label_map = {
     "station_capex": "Station CAPEX",
     "site_capex": "Site CAPEX",
     "station_annual_staff_costs": "Station Annual Staff Costs",
-    "station_annual_other_service_costs": "Station Annual Other Service Costs",
+    "station_annual_other_service_costs": "Other Station Annual Service Costs",
     "years": "TCO Horizon",
     "battery_lifetime_cycles": "Battery Lifetime Cycles",
 
