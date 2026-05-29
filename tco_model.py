@@ -1658,8 +1658,11 @@ def run_margin_sweep_with_uncertainty(
             sampled_unladen_energy_saving = sample_uncertain("unladen_energy_saving", 0.20, 0.25, 0.30, rng)
 
             sampled_battery_capacity_kwh = sample_uncertain("battery_capacity_kwh", 400.0, 513.0, 800.0, rng)
+            sampled_bet_depot_share = sample_uncertain("bet_depot_share", 0, 0.8, 1,rng)
 
             sampled_expected_station_utilisation = sample_uncertain("expected_station_utilisation", 0.20, 0.30, 0.50, rng)
+            sampled_expected_annual_return_on_battery_renting = sample_uncertain("expected_annual_return_on_battery_renting", 0.05, 0.15, 0.25, rng)
+            sampled_electricity_margin = sample_uncertain("electricity_margin", 0.2, 1, 1.5, rng)
 
             sampled_bet_subsidy = sample_bet_subsidy(
                 rng,
@@ -1675,6 +1678,8 @@ def run_margin_sweep_with_uncertainty(
                 bet_depot_energy_price_per_kwh=sampled_bet_depot_energy_price_per_kwh,
                 bet_public_energy_price_per_kwh=sampled_bet_public_energy_price_per_kwh,
                 bet_subsidy=sampled_bet_subsidy,
+                bet_depot_share=sampled_bet_depot_share,
+                electricity_margin=sampled_electricity_margin,
             )
 
             diesel_i = DieselInputs()
@@ -1695,6 +1700,7 @@ def run_margin_sweep_with_uncertainty(
                 unladen_energy_saving=sampled_unladen_energy_saving,
                 full_loaded_kwh_per_km_year1=sampled_full_loaded_kwh_per_km_year1,
                 expected_station_utilisation=sampled_expected_station_utilisation,
+                expected_annual_return_on_battery_renting=sampled_expected_annual_return_on_battery_renting,
             )
 
             results = run_model(
@@ -2475,11 +2481,13 @@ def run_monte_carlo_simulation(n_runs=500, random_seed=42, include_subsidy_uncer
 
         # BET-C only
         sampled_battery_capacity_kwh = sample_uncertain("battery_capacity_kwh", 400.0, 513.0, 800.0, rng)
-        sampled_bet_depot_share = sample_triangular(0, 0.8, 1,rng)
+        sampled_bet_depot_share = sample_uncertain("bet_depot_share", 0, 0.8, 1,rng)
         # BET-S only
-        sampled_expected_station_utilisation = sample_triangular(0.20, 0.30, 0.50, rng)
-        sampled_expected_annual_return_on_battery_renting = sample_triangular(0.05, 0.15, 0.25, rng)
-        sampled_electricity_margin = sample_triangular(0.2, 1, 1.5, rng)
+
+
+        sampled_expected_station_utilisation = sample_uncertain("expected_station_utilisation", 0.20, 0.30, 0.50, rng)
+        sampled_expected_annual_return_on_battery_renting = sample_uncertain("expected_annual_return_on_battery_renting", 0.05, 0.15, 0.25, rng)
+        sampled_electricity_margin = sample_uncertain("electricity_margin", 0.2, 1, 1.5, rng)
 
 
         # ===== 2) build sampled inputs =====
