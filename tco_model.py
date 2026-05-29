@@ -1784,8 +1784,12 @@ def get_drivers_of_gap(
             "battery_lifetime_cycles",
             "unladen_energy_saving",
             "battery_capacity_kwh",
-            "glider_capex",
             "battery_price_per_kwh",
+            "expected_annual_return_on_battery_renting",
+            "electricity_margin",
+            "bet_depot_share",
+            "bet_subsidy",
+            
         ]
 
     rows = []
@@ -2471,9 +2475,12 @@ def run_monte_carlo_simulation(n_runs=500, random_seed=42, include_subsidy_uncer
 
         # BET-C only
         sampled_battery_capacity_kwh = sample_uncertain("battery_capacity_kwh", 400.0, 513.0, 800.0, rng)
+        sampled_bet_depot_share = sample_triangular(0, 0.8, 1,rng)
         # BET-S only
-        sampled_expected_station_utilisation = sample_uncertain("expected_station_utilisation", 0.20, 0.30, 0.50, rng)
-        sampled_  = sample_uncertain("discount_rate", 0.08, 0.10, 0.12, rng)
+        sampled_expected_station_utilisation = sample_triangular(0.20, 0.30, 0.50, rng)
+        sampled_expected_annual_return_on_battery_renting = sample_triangular(0.05, 0.15, 0.25, rng)
+        sampled_electricity_margin = sample_triangular(0.2, 1, 1.5, rng)
+
 
         # ===== 2) build sampled inputs =====
         shared_i = SharedInputs(
@@ -2484,6 +2491,8 @@ def run_monte_carlo_simulation(n_runs=500, random_seed=42, include_subsidy_uncer
             bet_depot_energy_price_per_kwh=sampled_bet_depot_energy_price_per_kwh,
             bet_public_energy_price_per_kwh=sampled_bet_public_energy_price_per_kwh,
             bet_subsidy=sampled_bet_subsidy,
+            bet_depot_share=sampled_bet_depot_share,
+            electricity_margin=sampled_electricity_margin,
         )
 
         diesel_i = DieselInputs()
@@ -2506,6 +2515,7 @@ def run_monte_carlo_simulation(n_runs=500, random_seed=42, include_subsidy_uncer
             unladen_energy_saving=sampled_unladen_energy_saving,
             full_loaded_kwh_per_km_year1=sampled_full_loaded_kwh_per_km_year1,
             expected_station_utilisation=sampled_expected_station_utilisation,
+            expected_annual_return_on_battery_renting=sampled_expected_annual_return_on_battery_renting,
             
         )
 
@@ -2543,6 +2553,10 @@ def run_monte_carlo_simulation(n_runs=500, random_seed=42, include_subsidy_uncer
             "battery_capacity_kwh": sampled_battery_capacity_kwh,
 
             "expected_station_utilisation": sampled_expected_station_utilisation,
+            "expected_annual_return_on_battery_renting": sampled_expected_annual_return_on_battery_renting,
+            "electricity_margin":sampled_electricity_margin,
+
+            "bet_depot_share":sampled_bet_depot_share,
 
             "bet_subsidy": sampled_bet_subsidy,
 

@@ -376,7 +376,7 @@ st.pyplot(hist_fig, use_container_width=True)
 # Driver correlations are shown separately for each subsidy scenario.
 input_columns = [
     "expected_station_utilisation",
-    "bet_subsidy",
+    "discount_rate",
     "full_loaded_km_per_day",
     "peak_price_per_kwh",
     "off_peak_share",
@@ -385,11 +385,14 @@ input_columns = [
     "full_loaded_kwh_per_km_year1",
     "battery_recycle_value_ratio",
     "glider_capex",
-    "battery_price_per_kwh",
     "battery_lifetime_cycles",
     "unladen_energy_saving",
     "battery_capacity_kwh",
-    "discount_rate",
+    "battery_price_per_kwh",
+    "expected_annual_return_on_battery_renting",
+    "electricity_margin",
+    "bet_depot_share",
+    "bet_subsidy",
 ]
 available_inputs = [c for c in input_columns if c in mc_df.columns]
 st.subheader("Drivers of BET-S - Diesel gap")
