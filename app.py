@@ -301,7 +301,7 @@ bets = replace(bets, battery_recycle_value_ratio=shared.battery_recycle_value_ra
 results = cached_baseline(asdict(shared), asdict(diesel), asdict(betc), asdict(bets))
 gaps = model.extract_tco_gaps(results)
 
-st.title("Truck TCO Analysis")
+st.title("TCO Analysis")
 
 with st.expander("Current model inputs", expanded=False):
     st.dataframe(build_input_table(shared, diesel, betc, bets), use_container_width=True)
