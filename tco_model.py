@@ -2251,7 +2251,7 @@ def get_uncertainty_specs(include_subsidy_uncertainty=True, uncertainty_override
         {
             "variable": "battery_lifetime_cycles",
             "target_class": ["betc", "bets"],
-            "left": 1600.0,
+            "left": 1500.0,
             "mode": 2200.0,
             "right": 3000.0,
         },
@@ -2293,7 +2293,7 @@ def get_uncertainty_specs(include_subsidy_uncertainty=True, uncertainty_override
         {
             "variable": "electricity_margin",
             "target_class": "shared",
-            "left": 0.50,
+            "left": 0.20,
             "mode": 1.00,
             "right": 1.50,
         },
@@ -2472,7 +2472,7 @@ def run_monte_carlo_simulation(n_runs=500, random_seed=42, include_subsidy_uncer
         sampled_battery_recycle_value_ratio = sample_uncertain("battery_recycle_value_ratio", 0.05, 0.10, 0.20, rng)
         sampled_glider_capex = sample_uncertain("glider_capex", 104000.0, 130000.0, 156000.0, rng)
         sampled_battery_price_per_kwh = sample_uncertain("battery_price_per_kwh", 118.4, 148.0, 177.6, rng)
-        sampled_battery_lifetime_cycles = sample_uncertain("battery_lifetime_cycles", 1600.0, 2200.0, 3000.0, rng)
+        sampled_battery_lifetime_cycles = sample_uncertain("battery_lifetime_cycles", 1500.0, 2200.0, 3000.0, rng)
         sampled_unladen_energy_saving = sample_uncertain("unladen_energy_saving", 0.2, 0.25, 0.3, rng)
         sampled_bet_subsidy = sample_bet_subsidy(
             rng,
