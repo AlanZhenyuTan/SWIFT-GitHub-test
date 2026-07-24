@@ -1,11 +1,12 @@
 
-
 from __future__ import annotations
 
 from dataclasses import dataclass, replace, asdict
 from typing import Dict, List
 import math
 import json
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -169,21 +170,23 @@ label_map = {
     "peak_price_per_kwh": "Peak Retail Energy Price - BaaS Provider Pays",
     "off_peak_price_per_kwh": "Off-peak Retail Energy Price - BaaS Provider Pays",
     "electricity_margin": "Target Electricity Margin",
-    "off_peak_share": "Off-peak Swapping Percentage",
+    "off_peak_share": "Percentage of Swaps Paying at the Lower Off-Peak Electricity Price",
     "full_loaded_kwh_per_km_year1": "BET Full-loaded kWh per km in Year 1",
     "battery_recycle_value_ratio": "Battery Residual Percentage",
     "bet_subsidy": "BET Purchase Subsidy",
+    "bet_depot_share": "Depot Slow Charging Percentage",
     "bet_public_energy_price_per_kwh": "Public Hub Electricity Price",
     "bet_depot_energy_price_per_kwh": "On-depot Retail Energy Price",
+    "diesel_price_multiplier": "Diesel Price Index",
     "glider_capex": "Electric Glider Price",
     "battery_price_per_kwh": "Initial Battery Price",
     "battery_capacity_kwh": "BET-C Total Battery Capacity",
     "station_capex": "Station CAPEX",
     "site_capex": "Site CAPEX",
     "station_annual_staff_costs": "Station Annual Staff Costs",
-    "station_annual_other_service_costs": "Other Station Annual Service Costs",
-    "years": "TCO Horizon",
+    "station_annual_other_service_costs": "Station Annual Other Service Costs",
     "battery_lifetime_cycles": "Battery Lifetime Cycles",
+    "years": "TCO Horizon"
 
 }
 
@@ -205,11 +208,6 @@ def discount_factors(rate: float, years: int) -> List[float]:
 
 def annual_driver_salary(days_per_year: float, hours_per_week: float, hourly_pay: float, shift_per_day: float = 1.0) -> float:
     """Annual driver/personnel cost per truck.
-
-    Excel first calculates one-shift driver salary as:
-        operational days / (worked hours per week / 9) * worked hours per week * hourly pay
-    and then multiplies it by Shift per day in the fixed operating cost rows
-    (All-in-1-sheet rows C39/G39/K37).
     """
     one_shift_salary = days_per_year / (hours_per_week / 9) * hours_per_week * hourly_pay
     return one_shift_salary * shift_per_day
@@ -223,12 +221,6 @@ def daily_distances(shared: SharedInputs) -> tuple[float, float]:
     full_loaded = shared.full_loaded_km_per_day
     unladen = full_loaded * shared.unladen_ratio_to_full
     return full_loaded, unladen
-
-
-# Backwards-compatible alias used elsewhere in the old code. ?????????????????????????????????????????
-def diesel_daily_distances(shared: SharedInputs) -> tuple[float, float]:
-    return daily_distances(shared)
-#####################################################????????????????????????????????????????????????
 
 
 def annual_km(shared: SharedInputs) -> float:
@@ -288,7 +280,7 @@ def financed_acquisition_npv_with_rate(
     return upfront_payment + annual_payment * sum(loan_df)
 
 
-def yearly_growth_series(start_value: float, growth_rate: float, years: int) -> List[float]:   #????????????????????????????????????
+def yearly_growth_series(start_value: float, growth_rate: float, years: int) -> List[float]:   
     vals = [start_value]
     for _ in range(1, years):
         vals.append(vals[-1] * (1 + growth_rate))
@@ -564,20 +556,38 @@ def compute_bet_s(shared: SharedInputs, inp: BETSInputs, asset_manager_margin: f
     expected_station_service_demand = round(
         inp.max_station_service_capacity_trucks_per_day * inp.expected_station_utilisation
     )
-    battery_capex = inp.battery_pack_capacity_kwh * inp.battery_price_per_kwh * (
-        inp.station_battery_bays + expected_station_service_demand * inp.battery_packs_per_truck
+    
+    total_battery_modules = (
+        inp.station_battery_bays
+        + expected_station_service_demand * inp.battery_packs_per_truck
     )
+
+    battery_capex = (
+        inp.battery_pack_capacity_kwh
+        * inp.battery_price_per_kwh
+        * total_battery_modules
+    )
+    
     annual_allocated_station_operating_cost_per_truck = (
         inp.station_annual_staff_costs + inp.station_annual_other_service_costs
     ) / expected_station_service_demand
     annual_allocated_infrastructure_depreciation_per_truck = (
         (inp.station_capex + inp.site_capex) / inp.station_lifetime_years
     ) / expected_station_service_demand
+    annual_battery_cycle_share = (
+        shared.operational_days_per_year
+        * expected_station_service_demand
+        * inp.battery_packs_per_truck
+        * swaps_per_day
+        / (inp.battery_lifetime_cycles * total_battery_modules)
+    )
+
     annual_allocated_battery_depreciation_per_truck = (
         battery_capex
         * (1 - inp.battery_recycle_value_ratio)
-        * (shared.operational_days_per_year / inp.battery_lifetime_cycles)
-    ) / expected_station_service_demand
+        * annual_battery_cycle_share
+        / expected_station_service_demand
+    )
     basic_annual_rent_to_cover_baas_costs = (
         annual_allocated_station_operating_cost_per_truck
         + annual_allocated_infrastructure_depreciation_per_truck
@@ -891,6 +901,12 @@ def compute_baas_provider_cashflows(
         * inp.expected_station_utilisation
     )
 
+    total_battery_modules = (
+        inp.station_battery_bays
+        + expected_station_service_demand
+        * inp.battery_packs_per_truck
+    )
+
     station_battery_capex = (
         inp.station_battery_bays
         * inp.battery_pack_capacity_kwh
@@ -967,7 +983,6 @@ def compute_baas_provider_cashflows(
 
         annual_electricity_sales_income = (
             daily_energy
-            * swaps_per_day
             * shared.operational_days_per_year
             * expected_station_service_demand
             * fleet_energy_price
@@ -1339,7 +1354,7 @@ def plot_baas_utilisation_irr_payback_heatmaps(df):
         "BaaS Provider Financial Viability: IRR and Payback Period by Station Utilisation",
         fontsize=16,
     )
-    return plt.gcf()
+    return fig
 
 def run_baas_utilisation_tco_gap_grid(
     shared=None,
@@ -1406,7 +1421,7 @@ def run_baas_utilisation_tco_gap_grid(
 def plot_baas_utilisation_tco_gap_heatmaps(
     df,
     gap_column="gap_bets_diesel",
-    title="TCO Gap between BET-S and Diesel Trucks by Station Utilisation",
+    title="BET-S minus Diesel Discounted TCO by Station Utilisation",
 ):
     utilisations = sorted(df["expected_station_utilisation"].unique())
     n_cols = len(utilisations)
@@ -1423,8 +1438,9 @@ def plot_baas_utilisation_tco_gap_heatmaps(
 
     gap_vmin = df[gap_column].min(skipna=True)
     gap_vmax = df[gap_column].max(skipna=True)
-
     abs_max = max(abs(gap_vmin), abs(gap_vmax))
+
+    is_per_km = gap_column.endswith("_per_km")
 
     for col, util in enumerate(utilisations):
         sub = df[df["expected_station_utilisation"] == util]
@@ -1467,7 +1483,11 @@ def plot_baas_utilisation_tco_gap_heatmaps(
                     label = "N/A"
                     text_color = "black"
                 else:
-                    label = f"{value / 1000:.0f}k"
+                    if is_per_km:
+                        label = f"{value:.3f}"
+                    else:
+                        label = f"{value / 1000:.0f}k"
+
                     text_color = "white" if abs(value) > abs_max * 0.5 else "black"
 
                 ax.text(
@@ -1480,14 +1500,20 @@ def plot_baas_utilisation_tco_gap_heatmaps(
                     color=text_color,
                 )
 
+    if is_per_km:
+        colorbar_label = "BET-S - Diesel discounted TCO gap (£/km)"
+    else:
+        colorbar_label = "BET-S - Diesel discounted TCO gap (£)"
+
     fig.colorbar(
         im,
         ax=axes,
         shrink=0.75,
-        label="BET-S - Diesel discounted TCO (£)",
+        label=colorbar_label,
     )
 
     fig.suptitle(title, fontsize=16)
+    return fig
 
 
     
@@ -1512,11 +1538,1615 @@ def extract_tco_gaps(results):
     bet_c_vs_diesel = results["bet_c"]["tco_discounted"] - results["diesel"]["tco_discounted"]
     bet_s_vs_diesel = results["bet_s"]["tco_discounted"] - results["diesel"]["tco_discounted"]
     bet_s_vs_bet_c = results["bet_s"]["tco_discounted"] - results["bet_c"]["tco_discounted"]
+
+    bet_c_vs_diesel_per_km = (results["bet_c"]["tco_per_km_discounted"] - results["diesel"]["tco_per_km_discounted"])
+    bet_s_vs_diesel_per_km = (results["bet_s"]["tco_per_km_discounted"] - results["diesel"]["tco_per_km_discounted"])
+    bet_s_vs_bet_c_per_km = (results["bet_s"]["tco_per_km_discounted"]  - results["bet_c"]["tco_per_km_discounted"] )
     return {
         "bet_c_vs_diesel": bet_c_vs_diesel,
         "bet_s_vs_diesel": bet_s_vs_diesel,
         "bet_s_vs_bet_c": bet_s_vs_bet_c,
+        "bet_c_vs_diesel_per_km": bet_c_vs_diesel_per_km,
+        "bet_s_vs_diesel_per_km": bet_s_vs_diesel_per_km,
+        "bet_s_vs_bet_c_per_km": bet_s_vs_bet_c_per_km,
     }
+
+
+# =========================================================
+# Life-cycle emission (LCE) calculations
+# =========================================================
+
+
+
+
+def _payload_to_tonnes(payload_kg: float) -> float:
+    """Convert payload from kg to tonnes for tonne-km calculations."""
+    return payload_kg / 1000.0
+
+
+def _life_cycle_emissions_per_tonne_km(
+    life_cycle_emissions_kg: float,
+    payload_kg: float,
+    total_km: float,
+) -> tuple[float, float]:
+    """Return (total tonne-km, kg CO2e per tonne-km)."""
+    payload_tonnes = _payload_to_tonnes(payload_kg)
+    total_tonne_km = payload_tonnes * total_km
+    emissions_per_tonne_km = (
+        life_cycle_emissions_kg / total_tonne_km
+        if total_tonne_km else math.nan
+    )
+    return total_tonne_km, emissions_per_tonne_km
+
+
+def compute_lce_bet_s(
+    shared: SharedInputs | None = None,
+    inp: BETSInputs | None = None,
+    electricity_emission_factor_kg_per_kwh: float = 0.196,
+    glider_weight_kg: float = 9986,
+    glider_production_emission_factor_kg_per_kg: float = 7,
+    glider_recycle_emission_saving_ratio: float = 0.17,
+    battery_production_emission_factor_kg_per_kwh: float = 57,
+    battery_recycle_emission_saving_ratio: float = 0.19,
+    battery_sets_needed: float = 2.0,
+    second_life_capacity_ratio: float = 0.80,
+    diesel_truck_payload_kg: float = 29000,
+    payload_penalty: float = 0.12,
+) -> Dict[str, float]:
+    """
+    Life-cycle emissions for BET-S.
+
+    payload_penalty is applied against the diesel payload benchmark:
+        BET-S payload = diesel payload * (1 - payload_penalty)
+
+    Outputs include kg CO2e/km and kg CO2e/tonne-km.
+    """
+    if shared is None:
+        shared = SharedInputs()
+    if inp is None:
+        inp = BETSInputs(battery_recycle_value_ratio=shared.battery_recycle_value_ratio)
+
+    daily_kwh = daily_energy_from_full_unladen(
+        shared,
+        bets_yearly_full_loaded_economies(inp, shared.years),
+        inp.unladen_energy_saving,
+    )
+    akm = annual_km(shared)
+
+    payload_kg = diesel_truck_payload_kg * (1 - payload_penalty)
+
+    glider_production_emissions = glider_weight_kg * glider_production_emission_factor_kg_per_kg
+    battery_production_emissions = (
+        inp.battery_pack_capacity_kwh
+        * inp.battery_packs_per_truck
+        * battery_production_emission_factor_kg_per_kwh
+        * battery_sets_needed
+    )
+    truck_production_emissions = glider_production_emissions + battery_production_emissions
+
+    annual_electricity_emissions = [
+        daily_energy * shared.operational_days_per_year * electricity_emission_factor_kg_per_kwh
+        for daily_energy in daily_kwh
+    ]
+    use_emissions = sum(annual_electricity_emissions) * battery_sets_needed
+
+    glider_recycle_emission_saving = glider_production_emissions * glider_recycle_emission_saving_ratio
+    battery_recycle_emission_saving = battery_production_emissions * battery_recycle_emission_saving_ratio
+    total_recycle_emission_saving = glider_recycle_emission_saving + battery_recycle_emission_saving
+
+    life_cycle_emissions = truck_production_emissions + use_emissions - total_recycle_emission_saving
+    total_km = akm * shared.years * battery_sets_needed
+    life_cycle_emissions_per_km = life_cycle_emissions / total_km if total_km else math.nan
+    total_tonne_km, life_cycle_emissions_per_tonne_km = _life_cycle_emissions_per_tonne_km(
+        life_cycle_emissions,
+        payload_kg,
+        total_km,
+    )
+
+    second_life_emission_credit = (
+        inp.battery_pack_capacity_kwh
+        * second_life_capacity_ratio
+        * inp.battery_packs_per_truck
+        * battery_production_emission_factor_kg_per_kwh
+        * battery_sets_needed
+    )
+    life_cycle_emissions_including_second_life_credit = life_cycle_emissions - second_life_emission_credit
+    life_cycle_emission_per_km_including_second_life_credit = (
+        life_cycle_emissions_including_second_life_credit / total_km
+        if total_km else math.nan
+    )
+    _, life_cycle_emission_per_tonne_km_including_second_life_credit = _life_cycle_emissions_per_tonne_km(
+        life_cycle_emissions_including_second_life_credit,
+        payload_kg,
+        total_km,
+    )
+
+    return {
+        "payload_kg": payload_kg,
+        "payload_tonnes": _payload_to_tonnes(payload_kg),
+        "payload_penalty": payload_penalty,
+        "glider_production_emissions": glider_production_emissions,
+        "battery_production_emissions": battery_production_emissions,
+        "truck_production_emissions": truck_production_emissions,
+        "annual_use_emissions": annual_electricity_emissions,
+        "use_emissions": use_emissions,
+        "glider_recycle_emission_saving": glider_recycle_emission_saving,
+        "battery_recycle_emission_saving": battery_recycle_emission_saving,
+        "total_recycle_emission_saving": total_recycle_emission_saving,
+        "life_cycle_emissions": life_cycle_emissions,
+        "life_cycle_emissions_per_km": life_cycle_emissions_per_km,
+        "life_cycle_emissions_per_tonne_km": life_cycle_emissions_per_tonne_km,
+        "second_life_emission_credit": second_life_emission_credit,
+        "life_cycle_emissions_including_second_life_credit": life_cycle_emissions_including_second_life_credit,
+        "life_cycle_emission_per_km_including_second_life_credit": life_cycle_emission_per_km_including_second_life_credit,
+        "life_cycle_emission_per_tonne_km_including_second_life_credit": life_cycle_emission_per_tonne_km_including_second_life_credit,
+        "total_km_lce": total_km,
+        "total_tonne_km_lce": total_tonne_km,
+    }
+
+
+def compute_lce_bet_c(
+    shared: SharedInputs | None = None,
+    inp: BETCInputs | None = None,
+    electricity_emission_factor_kg_per_kwh: float = 0.196,
+    glider_weight_kg: float = 9986,
+    glider_production_emission_factor_kg_per_kg: float = 7,
+    glider_recycle_emission_saving_ratio: float = 0.17,
+    battery_production_emission_factor_kg_per_kwh: float = 57,
+    battery_recycle_emission_saving_ratio: float = 0.05,
+    battery_sets_needed: float = 2.0,
+    diesel_truck_payload_kg: float = 29000,
+    payload_penalty: float = 0.12,
+) -> Dict[str, float]:
+    """
+    Life-cycle emissions for BET-C.
+
+    payload_penalty is applied in the same way as BET-S:
+        BET-C payload = diesel payload * (1 - payload_penalty)
+
+    Outputs include kg CO2e/km and kg CO2e/tonne-km.
+    """
+    if shared is None:
+        shared = SharedInputs()
+    if inp is None:
+        inp = BETCInputs(battery_recycle_value_ratio=shared.battery_recycle_value_ratio)
+
+    daily_kwh = daily_energy_from_full_unladen(
+        shared,
+        betc_yearly_full_loaded_economies(inp, shared.years),
+        inp.unladen_energy_saving,
+    )
+    akm = annual_km(shared)
+
+    payload_kg = diesel_truck_payload_kg * (1 - payload_penalty)
+
+    glider_production_emissions = glider_weight_kg * glider_production_emission_factor_kg_per_kg
+    battery_production_emissions = (
+        inp.battery_capacity_kwh
+        * battery_production_emission_factor_kg_per_kwh
+        * battery_sets_needed
+    )
+    truck_production_emissions = glider_production_emissions + battery_production_emissions
+
+    annual_electricity_emissions = [
+        daily_energy * shared.operational_days_per_year * electricity_emission_factor_kg_per_kwh
+        for daily_energy in daily_kwh
+    ]
+    use_emissions = sum(annual_electricity_emissions) * battery_sets_needed
+
+    glider_recycle_emission_saving = glider_production_emissions * glider_recycle_emission_saving_ratio
+    battery_recycle_emission_saving = battery_production_emissions * battery_recycle_emission_saving_ratio
+    total_recycle_emission_saving = glider_recycle_emission_saving + battery_recycle_emission_saving
+
+    life_cycle_emissions = truck_production_emissions + use_emissions - total_recycle_emission_saving
+    total_km = akm * shared.years * battery_sets_needed
+    life_cycle_emissions_per_km = life_cycle_emissions / total_km if total_km else math.nan
+    total_tonne_km, life_cycle_emissions_per_tonne_km = _life_cycle_emissions_per_tonne_km(
+        life_cycle_emissions,
+        payload_kg,
+        total_km,
+    )
+
+    return {
+        "payload_kg": payload_kg,
+        "payload_tonnes": _payload_to_tonnes(payload_kg),
+        "payload_penalty": payload_penalty,
+        "glider_production_emissions": glider_production_emissions,
+        "battery_production_emissions": battery_production_emissions,
+        "truck_production_emissions": truck_production_emissions,
+        "annual_use_emissions": annual_electricity_emissions,
+        "use_emissions": use_emissions,
+        "glider_recycle_emission_saving": glider_recycle_emission_saving,
+        "battery_recycle_emission_saving": battery_recycle_emission_saving,
+        "total_recycle_emission_saving": total_recycle_emission_saving,
+        "life_cycle_emissions": life_cycle_emissions,
+        "life_cycle_emissions_per_km": life_cycle_emissions_per_km,
+        "life_cycle_emissions_per_tonne_km": life_cycle_emissions_per_tonne_km,
+        "total_km_lce": total_km,
+        "total_tonne_km_lce": total_tonne_km,
+    }
+
+
+def compute_lce_diesel(
+    shared: SharedInputs | None = None,
+    inp: DieselInputs | None = None,
+    lce_years: int = 10,
+    truck_curb_weight_kg: float = 11022,
+    truck_production_emission_factor_kg_per_kg: float = 7.0,
+    truck_recycle_emission_saving_ratio: float = 0.17,
+    diesel_use_emission_factor_kg_co2e_per_litre: float = 3.17257,
+    diesel_truck_payload_kg: float = 29000,
+) -> Dict[str, float]:
+    """
+    Life-cycle emissions for diesel.
+
+    Outputs include kg CO2e/km and kg CO2e/tonne-km.
+    """
+    if shared is None:
+        shared = SharedInputs()
+    if inp is None:
+        inp = DieselInputs()
+
+    shared_lce = replace(shared, years=lce_years)
+    daily_litres = daily_energy_from_full_unladen(
+        shared_lce,
+        diesel_yearly_fuel_economies(inp, lce_years),
+        inp.unladen_energy_saving,
+    )
+
+    akm = annual_km(shared_lce)
+    payload_kg = diesel_truck_payload_kg
+
+    truck_production_emissions = truck_curb_weight_kg * truck_production_emission_factor_kg_per_kg
+    annual_use_emissions = [
+        daily_litre
+        * inp.refuels_per_day
+        * shared_lce.operational_days_per_year
+        * diesel_use_emission_factor_kg_co2e_per_litre
+        for daily_litre in daily_litres
+    ]
+
+    use_emissions = sum(annual_use_emissions)
+    total_recycle_emission_saving = truck_production_emissions * truck_recycle_emission_saving_ratio
+    life_cycle_emissions = truck_production_emissions + use_emissions - total_recycle_emission_saving
+    total_km = akm * lce_years
+    life_cycle_emissions_per_km = life_cycle_emissions / total_km if total_km else math.nan
+    total_tonne_km, life_cycle_emissions_per_tonne_km = _life_cycle_emissions_per_tonne_km(
+        life_cycle_emissions,
+        payload_kg,
+        total_km,
+    )
+
+    return {
+        "payload_kg": payload_kg,
+        "payload_tonnes": _payload_to_tonnes(payload_kg),
+        "truck_production_emissions": truck_production_emissions,
+        "annual_use_emissions": annual_use_emissions,
+        "use_emissions": use_emissions,
+        "total_recycle_emission_saving": total_recycle_emission_saving,
+        "life_cycle_emissions": life_cycle_emissions,
+        "life_cycle_emissions_per_km": life_cycle_emissions_per_km,
+        "life_cycle_emissions_per_tonne_km": life_cycle_emissions_per_tonne_km,
+        "diesel_use_emission_factor_kg_co2e_per_litre": diesel_use_emission_factor_kg_co2e_per_litre,
+        "use_emissions_per_km": use_emissions / total_km if total_km else math.nan,
+        "use_emissions_per_tonne_km": use_emissions / total_tonne_km if total_tonne_km else math.nan,
+        "total_km_lce": total_km,
+        "total_tonne_km_lce": total_tonne_km,
+    }
+
+
+def run_lce_model(
+    shared: SharedInputs | None = None,
+    diesel_inp: DieselInputs | None = None,
+    betc_inp: BETCInputs | None = None,
+    bets_inp: BETSInputs | None = None,
+    diesel_lce_kwargs=None,
+    betc_lce_kwargs=None,
+    bets_lce_kwargs=None,
+) -> Dict[str, Dict[str, float]]:
+
+    if shared is None:
+        shared = SharedInputs()
+    if diesel_inp is None:
+        diesel_inp = DieselInputs()
+    if betc_inp is None:
+        betc_inp = BETCInputs(battery_recycle_value_ratio=shared.battery_recycle_value_ratio)
+    if bets_inp is None:
+        bets_inp = BETSInputs(battery_recycle_value_ratio=shared.battery_recycle_value_ratio)
+
+    diesel_lce_kwargs = dict(diesel_lce_kwargs or {})
+    betc_lce_kwargs = dict(betc_lce_kwargs or {})
+    bets_lce_kwargs = dict(bets_lce_kwargs or {})
+
+    # Keep diesel LCE horizon aligned with the electric-truck LCE horizon.
+    # In the current LCE setup, BET-C/BET-S total distance is calculated as:
+    #     annual_km * shared.years * battery_sets_needed
+    # with battery_sets_needed defaulting to 2. Therefore, when shared.years is
+    # changed through input_map, diesel must receive an updated lce_years too;
+    # otherwise shared.years would have no effect on diesel LCE sensitivity.
+    if "lce_years" not in diesel_lce_kwargs:
+        betc_sets = betc_lce_kwargs.get("battery_sets_needed", 2.0)
+        bets_sets = bets_lce_kwargs.get("battery_sets_needed", 2.0)
+        diesel_lce_kwargs["lce_years"] = int(round(shared.years * max(betc_sets, bets_sets)))
+
+    return {
+        "diesel": compute_lce_diesel(shared, diesel_inp, **diesel_lce_kwargs),
+        "bet_c": compute_lce_bet_c(shared, betc_inp, **betc_lce_kwargs),
+        "bet_s": compute_lce_bet_s(shared, bets_inp, **bets_lce_kwargs),
+    }
+
+
+def pretty_lce_summary(lce_results: Dict[str, Dict[str, float]]) -> str:
+    def money_like(value: float) -> str:
+        return f"{value:,.2f}"
+
+    lines = []
+    lines.append("\n10-year Life Cycle Emissions Summary")
+    lines.append("=" * 70)
+
+    lines.append("BET-S")
+    lines.append(f"  Payload: {lce_results['bet_s']['payload_tonnes']:.2f} tonnes")
+    lines.append(f"  Total tonne-km: {money_like(lce_results['bet_s']['total_tonne_km_lce'])} tonne-km")
+    lines.append(f"  Truck Production Emissions: {money_like(lce_results['bet_s']['truck_production_emissions'])} kg CO2e")
+    lines.append(f"  Use Emissions: {money_like(lce_results['bet_s']['use_emissions'])} kg CO2e")
+    lines.append(f"  Total Recycle Emission saving: {money_like(lce_results['bet_s']['total_recycle_emission_saving'])} kg CO2e")
+    lines.append(f"  Life Cycle Emissions: {money_like(lce_results['bet_s']['life_cycle_emissions'])} kg CO2e")
+    lines.append(f"  Life Cycle Emissions per km: {lce_results['bet_s']['life_cycle_emissions_per_km']:.6f} kg CO2e/km")
+    lines.append(f"  Life Cycle Emissions per tonne-km: {lce_results['bet_s']['life_cycle_emissions_per_tonne_km']:.4f} kg CO2e/tonne-km")
+    lines.append(f"  Life Cycle Emission per km including Second Life Credit: {lce_results['bet_s']['life_cycle_emission_per_km_including_second_life_credit']:.6f} kg CO2e/km")
+    lines.append(f"  Life Cycle Emission per tonne-km including Second Life Credit: {lce_results['bet_s']['life_cycle_emission_per_tonne_km_including_second_life_credit']:.4f} kg CO2e/tonne-km")
+
+    lines.append("\nBET-C")
+    lines.append(f"  Payload: {lce_results['bet_c']['payload_tonnes']:.2f} tonnes")
+    lines.append(f"  Total tonne-km: {money_like(lce_results['bet_c']['total_tonne_km_lce'])} tonne-km")
+    lines.append(f"  Truck Production Emissions: {money_like(lce_results['bet_c']['truck_production_emissions'])} kg CO2e")
+    lines.append(f"  Use Emissions: {money_like(lce_results['bet_c']['use_emissions'])} kg CO2e")
+    lines.append(f"  Total Recycle Emission saving: {money_like(lce_results['bet_c']['total_recycle_emission_saving'])} kg CO2e")
+    lines.append(f"  Life Cycle Emissions: {money_like(lce_results['bet_c']['life_cycle_emissions'])} kg CO2e")
+    lines.append(f"  Life Cycle Emissions per km: {lce_results['bet_c']['life_cycle_emissions_per_km']:.6f} kg CO2e/km")
+    lines.append(f"  Life Cycle Emissions per tonne-km: {lce_results['bet_c']['life_cycle_emissions_per_tonne_km']:.6f} kg CO2e/tonne-km")
+
+    lines.append("\nDiesel")
+    lines.append(f"  Payload: {lce_results['diesel']['payload_tonnes']:.2f} tonnes")
+    lines.append(f"  Total tonne-km: {money_like(lce_results['diesel']['total_tonne_km_lce'])} tonne-km")
+    lines.append(f"  Truck Production Emissions: {money_like(lce_results['diesel']['truck_production_emissions'])} kg CO2e")
+    lines.append(f"  Use Emissions: {money_like(lce_results['diesel']['use_emissions'])} kg CO2e")
+    lines.append(f"  Total Recycle Emission saving: {money_like(lce_results['diesel']['total_recycle_emission_saving'])} kg CO2e")
+    lines.append(f"  Life Cycle Emissions: {money_like(lce_results['diesel']['life_cycle_emissions'])} kg CO2e")
+    lines.append(f"  Life Cycle Emissions per km: {lce_results['diesel']['life_cycle_emissions_per_km']:.6f} kg CO2e/km")
+    lines.append(f"  Life Cycle Emissions per tonne-km: {lce_results['diesel']['life_cycle_emissions_per_tonne_km']:.4f} kg CO2e/tonne-km")
+    return "\n".join(lines)
+
+
+def plot_lce_per_km_comparison(lce_results: Dict[str, Dict[str, float]], save_path=None):
+    labels = [
+        "Diesel",
+        "BET-C",
+        "BET-S",
+        "BET-S\nwith second-life credit",
+    ]
+
+    colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+
+    values = [
+        lce_results["diesel"]["life_cycle_emissions_per_km"],
+        lce_results["bet_c"]["life_cycle_emissions_per_km"],
+        lce_results["bet_s"]["life_cycle_emissions_per_km"],
+        lce_results["bet_s"]["life_cycle_emission_per_km_including_second_life_credit"],
+    ]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bars = ax.bar(labels, values, color=colors)
+    ax.set_ylabel("kg CO2e/km")
+    ax.set_title("Life Cycle Emissions per km Comparison")
+    ax.grid(axis="y", alpha=0.3)
+
+    for bar, value in zip(bars, values):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height(),
+            f"{value:.3f}",
+            ha="center",
+            va="bottom",
+        )
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+
+    return fig
+
+
+def plot_lce_per_tonne_km_comparison(lce_results: Dict[str, Dict[str, float]], save_path=None):
+    labels = [
+        "Diesel",
+        "BET-C",
+        "BET-S",
+        "BET-S\nwith second-life credit",
+    ]
+
+    colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+
+    values = [
+        lce_results["diesel"]["life_cycle_emissions_per_tonne_km"],
+        lce_results["bet_c"]["life_cycle_emissions_per_tonne_km"],
+        lce_results["bet_s"]["life_cycle_emissions_per_tonne_km"],
+        lce_results["bet_s"]["life_cycle_emission_per_tonne_km_including_second_life_credit"],
+    ]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bars = ax.bar(labels, values, color=colors)
+    ax.set_ylabel("kg CO2e/tonne-km")
+    ax.set_title("Life Cycle Emissions per tonne-km Comparison")
+    ax.grid(axis="y", alpha=0.3)
+
+    for bar, value in zip(bars, values):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height(),
+            f"{value:.4f}",
+            ha="center",
+            va="bottom",
+        )
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+
+    return fig
+
+
+
+def extract_lce_metrics(lce_results):
+    """Extract LCE metrics in kgCO2e/km and kgCO2e/tonne-km."""
+    diesel_tkm = lce_results["diesel"]["life_cycle_emissions_per_tonne_km"]
+    bet_c_tkm = lce_results["bet_c"]["life_cycle_emissions_per_tonne_km"]
+    bet_s_tkm = lce_results["bet_s"]["life_cycle_emissions_per_tonne_km"]
+
+    diesel_km = lce_results["diesel"]["life_cycle_emissions_per_km"]
+    bet_c_km = lce_results["bet_c"]["life_cycle_emissions_per_km"]
+    bet_s_km = lce_results["bet_s"]["life_cycle_emissions_per_km"]
+
+    return {
+        "diesel_tonne_km": diesel_tkm,
+        "bet_c_tonne_km": bet_c_tkm,
+        "bet_s_tonne_km": bet_s_tkm,
+        "bet_c_vs_diesel_tonne_km": bet_c_tkm - diesel_tkm,
+        "bet_s_vs_diesel_tonne_km": bet_s_tkm - diesel_tkm,
+        "bet_s_vs_bet_c_tonne_km": bet_s_tkm - bet_c_tkm,
+
+        "diesel_km": diesel_km,
+        "bet_c_km": bet_c_km,
+        "bet_s_km": bet_s_km,
+        "bet_c_vs_diesel_km": bet_c_km - diesel_km,
+        "bet_s_vs_diesel_km": bet_s_km - diesel_km,
+        "bet_s_vs_bet_c_km": bet_s_km - bet_c_km,
+    }
+
+
+# Backwards-compatible alias for earlier code.
+def extract_lce_tonne_km_gaps(lce_results):
+    metrics = extract_lce_metrics(lce_results)
+    return {
+        "diesel": metrics["diesel_tonne_km"],
+        "bet_c": metrics["bet_c_tonne_km"],
+        "bet_s": metrics["bet_s_tonne_km"],
+        "bet_c_vs_diesel": metrics["bet_c_vs_diesel_tonne_km"],
+        "bet_s_vs_diesel": metrics["bet_s_vs_diesel_tonne_km"],
+        "bet_s_vs_bet_c": metrics["bet_s_vs_bet_c_tonne_km"],
+    }
+
+
+def run_lce_sensitivity_analysis(
+    variable_map=None,
+    input_map=None,
+    base_value=None,
+    changes=None,
+    values=None,
+    vehicle_values=None,
+    shared=None,
+    diesel_inp=None,
+    betc_inp=None,
+    bets_inp=None,
+):
+    """
+    Run one-at-a-time LCE sensitivity analysis.
+
+    Supported specification styles:
+
+    1) variable_map: change parameters passed directly to compute_lce_* functions.
+       Example:
+       variable_map={"bet_c": "battery_production_emission_factor_kg_per_kwh",
+                     "bet_s": "battery_production_emission_factor_kg_per_kwh"}
+       values=[40, 57, 69]
+
+    2) vehicle_values: apply the same percentage changes to vehicle-specific
+       LCE parameters with different baseline values.
+       Example:
+       vehicle_values={
+           "diesel": {"parameter": "truck_curb_weight_kg", "base_value": 11022},
+           "bet_c": {"parameter": "glider_weight_kg", "base_value": 9986},
+           "bet_s": {"parameter": "glider_weight_kg", "base_value": 9986},
+       }
+       changes=[-0.2, 0, 0.2]
+
+    3) input_map: change dataclass inputs before running LCE.
+       Example:
+       input_map={"shared": "full_loaded_km_per_day"}
+       input_map={"shared": "years"}
+       input_map={"bet_c": "battery_lifetime_cycles", "bet_s": "battery_lifetime_cycles"}
+    """
+    if shared is None:
+        shared = SharedInputs()
+    if diesel_inp is None:
+        diesel_inp = DieselInputs()
+    if betc_inp is None:
+        betc_inp = BETCInputs(battery_recycle_value_ratio=shared.battery_recycle_value_ratio)
+    if bets_inp is None:
+        bets_inp = BETSInputs(battery_recycle_value_ratio=shared.battery_recycle_value_ratio)
+
+    if vehicle_values is not None:
+        if changes is None:
+            raise ValueError("vehicle_values mode requires changes, e.g. [-0.2, 0, 0.2].")
+        scenario_values = list(changes)
+        labels = [f"{ch:+.0%}" for ch in changes]
+        x_labels = labels
+    else:
+        if values is None:
+            if base_value is None or changes is None:
+                raise ValueError("Either values, vehicle_values+changes, or base_value+changes must be provided.")
+            values = [base_value * (1 + ch) for ch in changes]
+            labels = [f"{ch:+.0%}" for ch in changes]
+        else:
+            labels = [f"{v:g}" for v in values]
+        scenario_values = list(values)
+        x_labels = [f"{v:g}" for v in scenario_values]
+
+    out = {
+        "variable_map": variable_map,
+        "input_map": input_map,
+        "vehicle_values": vehicle_values,
+        "base_value": base_value,
+        "values": scenario_values,
+        "labels": labels,
+        "x_labels": x_labels,
+
+        "diesel": [],
+        "bet_c": [],
+        "bet_s": [],
+        "bet_c_vs_diesel": [],
+        "bet_s_vs_diesel": [],
+        "bet_s_vs_bet_c": [],
+
+        "diesel_per_km": [],
+        "bet_c_per_km": [],
+        "bet_s_per_km": [],
+        "bet_c_vs_diesel_per_km": [],
+        "bet_s_vs_diesel_per_km": [],
+        "bet_s_vs_bet_c_per_km": [],
+    }
+
+    for scenario_value in scenario_values:
+        diesel_kwargs = {}
+        betc_kwargs = {}
+        bets_kwargs = {}
+
+        # Start from the original dataclass inputs in every scenario, then replace
+        # the target field only for this scenario. This is what makes input_map work.
+        shared_i = shared
+        diesel_inp_i = diesel_inp
+        betc_inp_i = betc_inp
+        bets_inp_i = bets_inp
+
+        if vehicle_values is not None:
+            ch = scenario_value
+            if "diesel" in vehicle_values:
+                p = vehicle_values["diesel"]["parameter"]
+                v = vehicle_values["diesel"]["base_value"] * (1 + ch)
+                diesel_kwargs[p] = v
+
+            if "bet_c" in vehicle_values:
+                p = vehicle_values["bet_c"]["parameter"]
+                v = vehicle_values["bet_c"]["base_value"] * (1 + ch)
+                betc_kwargs[p] = v
+
+            if "bet_s" in vehicle_values:
+                p = vehicle_values["bet_s"]["parameter"]
+                v = vehicle_values["bet_s"]["base_value"] * (1 + ch)
+                bets_kwargs[p] = v
+        else:
+            new_value = scenario_value
+
+            input_map = input_map or {}
+            variable_map = variable_map or {}
+
+            # input_map changes fields inside SharedInputs / DieselInputs / BETCInputs / BETSInputs.
+            if "shared" in input_map:
+                shared_i = replace(shared_i, **{input_map["shared"]: new_value})
+
+            if "diesel" in input_map:
+                diesel_inp_i = replace(diesel_inp_i, **{input_map["diesel"]: new_value})
+
+            if "bet_c" in input_map:
+                betc_inp_i = replace(betc_inp_i, **{input_map["bet_c"]: new_value})
+
+            if "bet_s" in input_map:
+                bets_inp_i = replace(bets_inp_i, **{input_map["bet_s"]: new_value})
+
+            # variable_map changes keyword arguments passed directly into compute_lce_* functions.
+            if "diesel" in variable_map:
+                diesel_kwargs[variable_map["diesel"]] = new_value
+
+            if "bet_c" in variable_map:
+                betc_kwargs[variable_map["bet_c"]] = new_value
+
+            if "bet_s" in variable_map:
+                bets_kwargs[variable_map["bet_s"]] = new_value
+
+        lce_results = run_lce_model(
+            shared=shared_i,
+            diesel_inp=diesel_inp_i,
+            betc_inp=betc_inp_i,
+            bets_inp=bets_inp_i,
+            diesel_lce_kwargs=diesel_kwargs,
+            betc_lce_kwargs=betc_kwargs,
+            bets_lce_kwargs=bets_kwargs,
+        )
+
+        metrics = extract_lce_metrics(lce_results)
+
+        out["diesel"].append(metrics["diesel_tonne_km"])
+        out["bet_c"].append(metrics["bet_c_tonne_km"])
+        out["bet_s"].append(metrics["bet_s_tonne_km"])
+        out["bet_c_vs_diesel"].append(metrics["bet_c_vs_diesel_tonne_km"])
+        out["bet_s_vs_diesel"].append(metrics["bet_s_vs_diesel_tonne_km"])
+        out["bet_s_vs_bet_c"].append(metrics["bet_s_vs_bet_c_tonne_km"])
+
+        out["diesel_per_km"].append(metrics["diesel_km"])
+        out["bet_c_per_km"].append(metrics["bet_c_km"])
+        out["bet_s_per_km"].append(metrics["bet_s_km"])
+        out["bet_c_vs_diesel_per_km"].append(metrics["bet_c_vs_diesel_km"])
+        out["bet_s_vs_diesel_per_km"].append(metrics["bet_s_vs_diesel_km"])
+        out["bet_s_vs_bet_c_per_km"].append(metrics["bet_s_vs_bet_c_km"])
+
+    return out
+
+
+def plot_lce_sensitivity_bar(sensitivity_results, title=None, metric="tonne_km"):
+    """
+    Plot LCE sensitivity.
+
+    metric="tonne_km" plots kgCO2e/tonne-km.
+    metric="km" plots kgCO2e/km.
+    """
+    labels = sensitivity_results["x_labels"]
+    x = np.arange(len(labels))
+    width = 0.25
+
+    if metric == "tonne_km":
+        diesel_key = "diesel"
+        bet_c_key = "bet_c"
+        bet_s_key = "bet_s"
+        ylabel = "Life-cycle emissions (kgCO2e/tonne-km)"
+        title_suffix = "per tonne-km"
+        value_fmt = "{:.4f}"
+    elif metric == "km":
+        diesel_key = "diesel_per_km"
+        bet_c_key = "bet_c_per_km"
+        bet_s_key = "bet_s_per_km"
+        ylabel = "Life-cycle emissions (kgCO2e/km)"
+        title_suffix = "per km"
+        value_fmt = "{:.3f}"
+    else:
+        raise ValueError("metric must be either 'tonne_km' or 'km'.")
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    bars1 = ax.bar(x - width, sensitivity_results[diesel_key], width, label="Diesel")
+    bars2 = ax.bar(x, sensitivity_results[bet_c_key], width, label="BET-C")
+    bars3 = ax.bar(x + width, sensitivity_results[bet_s_key], width, label="BET-S")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel("Input value / scenario")
+
+    if title is None:
+        title = f"LCE sensitivity analysis {title_suffix}"
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(axis="y", alpha=0.3)
+
+    for bars in [bars1, bars2, bars3]:
+        for bar in bars:
+            v = bar.get_height()
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                v,
+                value_fmt.format(v),
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
+
+    plt.tight_layout()
+    # Figure returned below for Streamlit compatibility.
+    return fig
+
+
+def run_multiple_lce_sensitivity_analyses(specs):
+    results = {}
+
+    for spec in specs:
+        name = spec["name"]
+
+        results[name] = run_lce_sensitivity_analysis(
+            vehicle_values=spec.get("vehicle_values", None),
+            input_map=spec.get("input_map", None),
+            variable_map=spec.get("variable_map", None),
+            base_value=spec.get("base_value", None),
+            changes=spec.get("changes", None),
+            values=spec.get("values", None),
+            shared=spec.get("shared", None),
+            diesel_inp=spec.get("diesel_inp", None),
+            betc_inp=spec.get("betc_inp", None),
+            bets_inp=spec.get("bets_inp", None),
+        )
+
+    return results
+
+
+def plot_multiple_lce_sensitivity_analyses(results, include_per_tonne_km=True, include_per_km=True):
+    for name, sensitivity_result in results.items():
+        if include_per_tonne_km:
+            plot_lce_sensitivity_bar(
+                sensitivity_result,
+                title=f"LCE sensitivity per tonne-km: {name}",
+                metric="tonne_km",
+            )
+        if include_per_km:
+            plot_lce_sensitivity_bar(
+                sensitivity_result,
+                title=f"LCE sensitivity per km: {name}",
+                metric="km",
+            )
+
+
+def default_lce_sensitivity_specs(
+    shared=None,
+    diesel_inp=None,
+    betc_inp=None,
+    bets_inp=None,
+):
+    return [
+        {
+            "name": "curb/glider weight",
+            "vehicle_values": {
+                "diesel": {
+                    "parameter": "truck_curb_weight_kg",
+                    "base_value": 11022,
+                },
+                "bet_c": {
+                    "parameter": "glider_weight_kg",
+                    "base_value": 9986,
+                },
+                "bet_s": {
+                    "parameter": "glider_weight_kg",
+                    "base_value": 9986,
+                },
+            },
+            "changes": [-0.2, 0, 0.2],
+            "shared": shared,
+            "diesel_inp": diesel_inp,
+            "betc_inp": betc_inp,
+            "bets_inp": bets_inp,
+        },
+        {
+            "name": "Full-loaded VKT per day",
+            "input_map": {
+                "shared": "full_loaded_km_per_day",
+            },
+            "base_value": 240.0,
+            "changes": [-0.50, -0.20, 0.0, 0.40, 0.80],
+        },
+
+        {
+            "name": "curb/glider production emission factor",
+            "variable_map": {
+                "diesel": "truck_production_emission_factor_kg_per_kg",
+                "bet_c": "glider_production_emission_factor_kg_per_kg",
+                "bet_s": "glider_production_emission_factor_kg_per_kg",
+            },
+            "values": [6.59, 7, 8],
+            "shared": shared,
+            "diesel_inp": diesel_inp,
+            "betc_inp": betc_inp,
+            "bets_inp": bets_inp,
+        },
+        {
+            "name": "battery production emission factor",
+            "variable_map": {
+                "bet_c": "battery_production_emission_factor_kg_per_kwh",
+                "bet_s": "battery_production_emission_factor_kg_per_kwh",
+            },
+            "values": [40, 57, 69],
+            "shared": shared,
+            "diesel_inp": diesel_inp,
+            "betc_inp": betc_inp,
+            "bets_inp": bets_inp,
+        },
+    ]
+
+
+# =========================================================
+# LCE Monte Carlo uncertainty analysis
+# =========================================================
+
+def _sample_triangular(rng, low: float, mode: float, high: float, size: int):
+    """Sample from a triangular distribution."""
+    return rng.triangular(left=low, mode=mode, right=high, size=size)
+
+
+def _sample_uniform(rng, low: float, high: float, size: int):
+    """Sample from a uniform distribution."""
+    return rng.uniform(low=low, high=high, size=size)
+
+
+def _sample_normal(rng, mean: float, sd: float, size: int, low=None, high=None):
+    """Sample from a normal distribution, optionally clipped to [low, high]."""
+    samples = rng.normal(loc=mean, scale=sd, size=size)
+    if low is not None or high is not None:
+        low_clip = -np.inf if low is None else low
+        high_clip = np.inf if high is None else high
+        samples = np.clip(samples, low_clip, high_clip)
+    return samples
+
+
+def _draw_lce_mc_samples(spec: dict, rng, n_runs: int):
+    """
+    Draw Monte Carlo samples for one uncertainty specification.
+
+    Supported styles:
+    1) Absolute values:
+       {"distribution": "triangular", "low": 40, "mode": 57, "high": 69}
+       {"distribution": "uniform", "low": 40, "high": 69}
+       {"distribution": "normal", "mean": 57, "sd": 10, "low": 20, "high": 100}
+
+    2) Relative changes for vehicle_values:
+       {"distribution": "triangular", "relative_low": -0.2, "relative_mode": 0, "relative_high": 0.2}
+       The sampled value is a fractional change and will be applied to each vehicle's own baseline.
+    """
+    distribution = spec.get("distribution", "triangular")
+
+    # For vehicle_values, sample relative changes and apply them to each
+    # vehicle-specific baseline.
+    #
+    # Optional shared_sample_groups lets selected vehicles share exactly the same
+    # Monte Carlo draw. For example, if BET-C and BET-S use the same electric
+    # glider, use: "shared_sample_groups": [["bet_c", "bet_s"]].
+    if "vehicle_values" in spec and (
+        "relative_low" in spec or "relative_high" in spec or "relative_mode" in spec
+    ):
+        low = spec.get("relative_low", min(spec.get("changes", [-0.2, 0, 0.2])))
+        mode = spec.get("relative_mode", 0.0)
+        high = spec.get("relative_high", max(spec.get("changes", [-0.2, 0, 0.2])))
+
+        def draw_relative_samples():
+            if distribution == "triangular":
+                return _sample_triangular(rng, low, mode, high, n_runs)
+            if distribution == "uniform":
+                return _sample_uniform(rng, low, high, n_runs)
+            raise ValueError("Relative vehicle_values currently supports triangular or uniform distributions.")
+
+        shared_sample_groups = spec.get("shared_sample_groups", []) or []
+
+        # Backwards-compatible behaviour: one relative draw is shared by all
+        # vehicles in this spec.
+        if not shared_sample_groups:
+            return draw_relative_samples()
+
+        vehicle_keys = list(spec["vehicle_values"].keys())
+        sampled_by_run = [dict() for _ in range(n_runs)]
+        handled = set()
+
+        # Draw once per shared group and assign the same draw to all vehicles
+        # in that group.
+        for group in shared_sample_groups:
+            group_samples = draw_relative_samples()
+            for run_id, ch in enumerate(group_samples):
+                for vehicle in group:
+                    if vehicle in spec["vehicle_values"]:
+                        sampled_by_run[run_id][vehicle] = float(ch)
+            handled.update(group)
+
+        # Vehicles not in a shared group get their own independent draw.
+        for vehicle in vehicle_keys:
+            if vehicle in handled:
+                continue
+            vehicle_samples = draw_relative_samples()
+            for run_id, ch in enumerate(vehicle_samples):
+                sampled_by_run[run_id][vehicle] = float(ch)
+
+        return np.array(sampled_by_run, dtype=object)
+
+    if distribution == "triangular":
+        low = spec["low"]
+        mode = spec.get("mode", spec.get("base_value", spec.get("mean")))
+        high = spec["high"]
+        if mode is None:
+            raise ValueError(f"Triangular spec '{spec.get('name')}' needs mode or base_value.")
+        return _sample_triangular(rng, low, mode, high, n_runs)
+
+    if distribution == "uniform":
+        return _sample_uniform(rng, spec["low"], spec["high"], n_runs)
+
+    if distribution == "normal":
+        return _sample_normal(
+            rng,
+            mean=spec["mean"],
+            sd=spec["sd"],
+            size=n_runs,
+            low=spec.get("low"),
+            high=spec.get("high"),
+        )
+
+    raise ValueError(f"Unsupported Monte Carlo distribution: {distribution}")
+
+
+def _apply_lce_uncertainty_spec(
+    spec: dict,
+    sampled_value: float,
+    shared_i: SharedInputs,
+    diesel_inp_i: DieselInputs,
+    betc_inp_i: BETCInputs,
+    bets_inp_i: BETSInputs,
+    diesel_kwargs: dict,
+    betc_kwargs: dict,
+    bets_kwargs: dict,
+):
+    """Apply one sampled uncertainty value to the LCE model inputs/kwargs."""
+
+    if spec.get("vehicle_values") is not None:
+        # sampled_value is usually a relative change, e.g. -0.2 = -20%.
+        # If shared_sample_groups is used, sampled_value is a dict mapping each
+        # vehicle to its own relative draw, with grouped vehicles sharing one draw.
+        vehicle_values = spec["vehicle_values"]
+
+        def get_vehicle_relative_change(vehicle_key: str) -> float:
+            if isinstance(sampled_value, dict):
+                return float(sampled_value[vehicle_key])
+            return float(sampled_value)
+
+        if "diesel" in vehicle_values:
+            ch = get_vehicle_relative_change("diesel")
+            p = vehicle_values["diesel"]["parameter"]
+            v = vehicle_values["diesel"]["base_value"] * (1 + ch)
+            diesel_kwargs[p] = v
+
+        if "bet_c" in vehicle_values:
+            ch = get_vehicle_relative_change("bet_c")
+            p = vehicle_values["bet_c"]["parameter"]
+            v = vehicle_values["bet_c"]["base_value"] * (1 + ch)
+            betc_kwargs[p] = v
+
+        if "bet_s" in vehicle_values:
+            ch = get_vehicle_relative_change("bet_s")
+            p = vehicle_values["bet_s"]["parameter"]
+            v = vehicle_values["bet_s"]["base_value"] * (1 + ch)
+            bets_kwargs[p] = v
+
+        return shared_i, diesel_inp_i, betc_inp_i, bets_inp_i
+
+    input_map = spec.get("input_map", {}) or {}
+    variable_map = spec.get("variable_map", {}) or {}
+    new_value = float(sampled_value)
+
+    # input_map changes fields inside dataclass inputs.
+    if "shared" in input_map:
+        field_name = input_map["shared"]
+        # SharedInputs.years is typed as int and is used in range(); keep it integer.
+        if field_name == "years":
+            new_value_for_field = int(round(new_value))
+        else:
+            new_value_for_field = new_value
+        shared_i = replace(shared_i, **{field_name: new_value_for_field})
+
+    if "diesel" in input_map:
+        diesel_inp_i = replace(diesel_inp_i, **{input_map["diesel"]: new_value})
+
+    if "bet_c" in input_map:
+        betc_inp_i = replace(betc_inp_i, **{input_map["bet_c"]: new_value})
+
+    if "bet_s" in input_map:
+        bets_inp_i = replace(bets_inp_i, **{input_map["bet_s"]: new_value})
+
+    # variable_map changes kwargs passed directly into compute_lce_*.
+    if "diesel" in variable_map:
+        diesel_kwargs[variable_map["diesel"]] = new_value
+
+    if "bet_c" in variable_map:
+        betc_kwargs[variable_map["bet_c"]] = new_value
+
+    if "bet_s" in variable_map:
+        bets_kwargs[variable_map["bet_s"]] = new_value
+
+    return shared_i, diesel_inp_i, betc_inp_i, bets_inp_i
+
+
+def _flatten_lce_results_for_mc(analysis_name: str, run_id: int, lce_results: dict) -> dict:
+    """Flatten run_lce_model output into one row for Monte Carlo analysis."""
+    row = {
+        "analysis": analysis_name,
+        "run": run_id,
+    }
+
+    vehicle_map = {
+        "diesel": "diesel",
+        "bet_c": "bet_c",
+        "bet_s": "bet_s",
+    }
+
+    for vehicle_key, prefix in vehicle_map.items():
+        r = lce_results[vehicle_key]
+        row[f"{prefix}_life_cycle_emissions"] = r["life_cycle_emissions"]
+        row[f"{prefix}_per_km"] = r["life_cycle_emissions_per_km"]
+        row[f"{prefix}_per_tonne_km"] = r["life_cycle_emissions_per_tonne_km"]
+        row[f"{prefix}_total_km"] = r["total_km_lce"]
+        row[f"{prefix}_total_tonne_km"] = r["total_tonne_km_lce"]
+
+    row["bet_s_second_life_per_km"] = lce_results["bet_s"][
+        "life_cycle_emission_per_km_including_second_life_credit"
+    ]
+    row["bet_s_second_life_per_tonne_km"] = lce_results["bet_s"][
+        "life_cycle_emission_per_tonne_km_including_second_life_credit"
+    ]
+
+    return row
+
+
+def run_lce_monte_carlo_analysis(
+    specs,
+    n_runs: int = 1000,
+    random_seed: int | None = 42,
+    shared: SharedInputs | None = None,
+    diesel_inp: DieselInputs | None = None,
+    betc_inp: BETCInputs | None = None,
+    bets_inp: BETSInputs | None = None,
+    analysis_name: str = "Total LCE uncertainty",
+):
+    """
+    Run one Monte Carlo analysis using one or more uncertainty specs.
+
+    - If specs contains one item, this is a single-variable uncertainty analysis.
+    - If specs contains multiple items, this is a total uncertainty analysis where all
+      listed variables vary simultaneously.
+    """
+    if shared is None:
+        shared = SharedInputs()
+    if diesel_inp is None:
+        diesel_inp = DieselInputs()
+    if betc_inp is None:
+        betc_inp = BETCInputs(battery_recycle_value_ratio=shared.battery_recycle_value_ratio)
+    if bets_inp is None:
+        bets_inp = BETSInputs(battery_recycle_value_ratio=shared.battery_recycle_value_ratio)
+
+    if isinstance(specs, dict):
+        specs = [specs]
+
+    rng = np.random.default_rng(random_seed)
+    sampled_values_by_spec = {
+        spec["name"]: _draw_lce_mc_samples(spec, rng, n_runs)
+        for spec in specs
+    }
+
+    rows = []
+
+    for run_id in range(n_runs):
+        shared_i = shared
+        diesel_inp_i = diesel_inp
+        betc_inp_i = betc_inp
+        bets_inp_i = bets_inp
+        diesel_kwargs = {}
+        betc_kwargs = {}
+        bets_kwargs = {}
+
+        sampled_inputs = {}
+
+        for spec in specs:
+            sampled_value = sampled_values_by_spec[spec["name"]][run_id]
+            if isinstance(sampled_value, dict):
+                for vehicle_key, vehicle_sample in sampled_value.items():
+                    sampled_inputs[f"{spec['name']}__{vehicle_key}"] = float(vehicle_sample)
+            else:
+                sampled_inputs[spec["name"]] = float(sampled_value)
+
+            shared_i, diesel_inp_i, betc_inp_i, bets_inp_i = _apply_lce_uncertainty_spec(
+                spec=spec,
+                sampled_value=sampled_value,
+                shared_i=shared_i,
+                diesel_inp_i=diesel_inp_i,
+                betc_inp_i=betc_inp_i,
+                bets_inp_i=bets_inp_i,
+                diesel_kwargs=diesel_kwargs,
+                betc_kwargs=betc_kwargs,
+                bets_kwargs=bets_kwargs,
+            )
+
+        lce_results = run_lce_model(
+            shared=shared_i,
+            diesel_inp=diesel_inp_i,
+            betc_inp=betc_inp_i,
+            bets_inp=bets_inp_i,
+            diesel_lce_kwargs=diesel_kwargs,
+            betc_lce_kwargs=betc_kwargs,
+            bets_lce_kwargs=bets_kwargs,
+        )
+
+        row = _flatten_lce_results_for_mc(analysis_name, run_id, lce_results)
+        for key, value in sampled_inputs.items():
+            row[f"sample__{key}"] = value
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def run_single_variable_lce_monte_carlo_analyses(
+    specs,
+    n_runs: int = 1000,
+    random_seed: int | None = 42,
+    shared: SharedInputs | None = None,
+    diesel_inp: DieselInputs | None = None,
+    betc_inp: BETCInputs | None = None,
+    bets_inp: BETSInputs | None = None,
+):
+    """Run one-at-a-time Monte Carlo analyses for every spec."""
+    dfs = []
+    for i, spec in enumerate(specs):
+        seed_i = None if random_seed is None else random_seed + i
+        df_i = run_lce_monte_carlo_analysis(
+            specs=[spec],
+            n_runs=n_runs,
+            random_seed=seed_i,
+            shared=shared,
+            diesel_inp=diesel_inp,
+            betc_inp=betc_inp,
+            bets_inp=bets_inp,
+            analysis_name=spec["name"],
+        )
+        dfs.append(df_i)
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
+def run_all_lce_monte_carlo_analyses(
+    specs,
+    n_runs: int = 1000,
+    random_seed: int | None = 42,
+    shared: SharedInputs | None = None,
+    diesel_inp: DieselInputs | None = None,
+    betc_inp: BETCInputs | None = None,
+    bets_inp: BETSInputs | None = None,
+    total_analysis_name: str = "Total LCE uncertainty",
+):
+    """
+    Return (single_variable_df, total_uncertainty_df).
+    """
+    single_df = run_single_variable_lce_monte_carlo_analyses(
+        specs=specs,
+        n_runs=n_runs,
+        random_seed=random_seed,
+        shared=shared,
+        diesel_inp=diesel_inp,
+        betc_inp=betc_inp,
+        bets_inp=bets_inp,
+    )
+
+    total_df = run_lce_monte_carlo_analysis(
+        specs=specs,
+        n_runs=n_runs,
+        random_seed=None if random_seed is None else random_seed + 10_000,
+        shared=shared,
+        diesel_inp=diesel_inp,
+        betc_inp=betc_inp,
+        bets_inp=bets_inp,
+        analysis_name=total_analysis_name,
+    )
+
+    return single_df, total_df
+
+
+def summarize_lce_monte_carlo_results(mc_df: pd.DataFrame) -> pd.DataFrame:
+    """Return mean, std, and percentile summary for each analysis and vehicle metric."""
+    metric_cols = [
+        "diesel_per_km",
+        "bet_c_per_km",
+        "bet_s_per_km",
+        "bet_s_second_life_per_km",
+        "diesel_per_tonne_km",
+        "bet_c_per_tonne_km",
+        "bet_s_per_tonne_km",
+        "bet_s_second_life_per_tonne_km",
+    ]
+
+    rows = []
+    for analysis_name, sub in mc_df.groupby("analysis"):
+        for col in metric_cols:
+            if col not in sub.columns:
+                continue
+            values = sub[col].dropna()
+            rows.append({
+                "analysis": analysis_name,
+                "metric": col,
+                "mean": values.mean(),
+                "std": values.std(),
+                "p05": values.quantile(0.05),
+                "p25": values.quantile(0.25),
+                "median": values.quantile(0.50),
+                "p75": values.quantile(0.75),
+                "p95": values.quantile(0.95),
+            })
+    return pd.DataFrame(rows)
+
+
+
+def _lce_metric_columns_and_labels(metric: str = "per_tonne_km", include_second_life: bool = True):
+    """Return plotting columns, labels, y-axis label, and title suffix for LCE MC plots."""
+    if metric == "per_tonne_km":
+        columns = ["diesel_per_tonne_km", "bet_c_per_tonne_km", "bet_s_per_tonne_km"]
+        labels = ["Diesel", "BET-C", "BET-S"]
+        ylabel = "Life-cycle emissions (kgCO2e/tonne-km)"
+        title_suffix = "per tonne-km"
+        if include_second_life:
+            columns.append("bet_s_second_life_per_tonne_km")
+            labels.append("BET-S\nwith second-life credit")
+    elif metric == "per_km":
+        columns = ["diesel_per_km", "bet_c_per_km", "bet_s_per_km"]
+        labels = ["Diesel", "BET-C", "BET-S"]
+        ylabel = "Life-cycle emissions (kgCO2e/km)"
+        title_suffix = "per km"
+        if include_second_life:
+            columns.append("bet_s_second_life_per_km")
+            labels.append("BET-S\nwith second-life credit")
+    else:
+        raise ValueError("metric must be either 'per_tonne_km' or 'per_km'.")
+
+    return columns, labels, ylabel, title_suffix
+
+
+def plot_lce_monte_carlo_boxplot(
+    mc_df: pd.DataFrame,
+    analysis_name: str,
+    metric: str = "per_tonne_km",
+    include_second_life: bool = True,
+):
+    """
+    Plot one boxplot for one Monte Carlo analysis.
+
+    This is retained for optional diagnostic use. The main workflow now uses
+    plot_single_variable_lce_monte_carlo_boxplots_combined() for single-variable
+    Monte Carlo outputs.
+    """
+    columns, labels, ylabel, title_suffix = _lce_metric_columns_and_labels(
+        metric=metric,
+        include_second_life=include_second_life,
+    )
+
+    sub = mc_df[mc_df["analysis"] == analysis_name]
+    if sub.empty:
+        raise ValueError(f"No Monte Carlo results found for analysis: {analysis_name}")
+
+    data = [sub[col].dropna().values for col in columns]
+
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+    bp = ax.boxplot(data, labels=labels, showmeans=True, patch_artist=True, showfliers=False)
+
+    color_map = ["tab:blue", "tab:orange", "tab:green", "tab:green"]
+    for patch, color in zip(bp["boxes"], color_map[:len(data)]):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+        patch.set_edgecolor("black")
+
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(2)
+
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"LCE Monte Carlo uncertainty {title_suffix}: {analysis_name}")
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    # Figure returned below for Streamlit compatibility.
+    return fig
+
+
+def plot_single_variable_lce_monte_carlo_boxplots_combined(
+    mc_df: pd.DataFrame,
+    metric: str = "per_tonne_km",
+    include_second_life: bool = True,
+    figsize=None,
+):
+    """
+    One long horizontal figure for all one-at-a-time LCE Monte Carlo variables.
+
+    For each uncertain variable, the function shows grouped boxplots for:
+    Diesel / BET-C / BET-S / optionally BET-S with second-life credit.
+    This mirrors the TCO independent-variable Monte Carlo boxplot style.
+    """
+    columns, vehicle_labels, ylabel, title_suffix = _lce_metric_columns_and_labels(
+        metric=metric,
+        include_second_life=include_second_life,
+    )
+
+    analysis_order = list(mc_df["analysis"].drop_duplicates())
+    n_metrics = len(columns)
+    if figsize is None:
+        figsize = (max(16, 4.6 * len(analysis_order)), 7.5)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    positions = []
+    data = []
+    group_centers = []
+    group_boundaries = []
+
+    gap_between_groups = 1.8
+    start = 1.0
+
+    for g, analysis_name in enumerate(analysis_order):
+        sub = mc_df[mc_df["analysis"] == analysis_name]
+        base = start + g * (n_metrics + gap_between_groups)
+
+        for j, col in enumerate(columns):
+            data.append(sub[col].dropna().values)
+            positions.append(base + j)
+
+        group_centers.append(base + (n_metrics - 1) / 2)
+
+        if g < len(analysis_order) - 1:
+            next_base = start + (g + 1) * (n_metrics + gap_between_groups)
+            boundary = (base + (n_metrics - 1) + next_base) / 2
+            group_boundaries.append(boundary)
+
+    bp = ax.boxplot(
+        data,
+        positions=positions,
+        widths=0.6,
+        patch_artist=True,
+        showfliers=False,
+        showmeans=True,
+    )
+
+    color_map = {
+        "diesel_per_tonne_km": "tab:blue",
+        "diesel_per_km": "tab:blue",
+        "bet_c_per_tonne_km": "tab:orange",
+        "bet_c_per_km": "tab:orange",
+        "bet_s_per_tonne_km": "tab:green",
+        "bet_s_per_km": "tab:green",
+        "bet_s_second_life_per_tonne_km": "tab:olive",
+        "bet_s_second_life_per_km": "tab:olive",
+    }
+    colors = [color_map[col] for _ in analysis_order for col in columns]
+
+    for patch, color in zip(bp["boxes"], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.72)
+        patch.set_edgecolor("black")
+
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(2)
+
+    for mean in bp.get("means", []):
+        mean.set_marker("D")
+        mean.set_markerfacecolor("black")
+        mean.set_markeredgecolor("black")
+        mean.set_markersize(4)
+
+    for x in group_boundaries:
+        ax.axvline(x=x, linestyle="--", linewidth=1, alpha=0.7)
+
+    pretty_labels = [get_pretty_label(a) for a in analysis_order]
+    ax.set_xticks(group_centers)
+    ax.set_xticklabels(pretty_labels,  ha="center")
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"Independent impact of each uncertain variable on LCE ({title_suffix})")
+    ax.grid(axis="y", alpha=0.3)
+
+    legend_handles = []
+    for label, col in zip(vehicle_labels, columns):
+        legend_handles.append(mpatches.Patch(color=color_map[col], label=label.replace("\n", " ")))
+    ax.legend(handles=legend_handles, loc="best")
+
+    plt.tight_layout()
+    # Figure returned below for Streamlit compatibility.
+    return fig
+
+
+def plot_total_lce_uncertainty_bar_with_percentile_range(
+    total_mc_df: pd.DataFrame,
+    metric: str = "per_tonne_km",
+    include_second_life: bool = True,
+    use_median: bool = True,
+):
+    """
+    Plot total LCE uncertainty as bars with 5th-95th percentile error ranges.
+
+    Bars show median by default; set use_median=False to show mean. Error bars
+    span the 5th and 95th percentiles.
+    """
+    columns, labels, ylabel, title_suffix = _lce_metric_columns_and_labels(
+        metric=metric,
+        include_second_life=include_second_life,
+    )
+
+    if total_mc_df.empty:
+        raise ValueError("total_mc_df is empty; cannot plot total LCE uncertainty.")
+
+    centers = []
+    p05 = []
+    p95 = []
+    means = []
+    for col in columns:
+        vals = total_mc_df[col].dropna()
+        center = vals.quantile(0.50) if use_median else vals.mean()
+        centers.append(center)
+        p05.append(vals.quantile(0.05))
+        p95.append(vals.quantile(0.95))
+        means.append(vals.mean())
+
+    centers = np.array(centers, dtype=float)
+    p05 = np.array(p05, dtype=float)
+    p95 = np.array(p95, dtype=float)
+    yerr = np.vstack([centers - p05, p95 - centers])
+
+    colors = [
+        "tab:blue",     # Diesel
+        "tab:orange",   # BET-C
+        "tab:green",    # BET-S
+        "tab:red",      # BET-S second-life
+    ]
+
+    fig, ax = plt.subplots(figsize=(8.5, 6))
+    x = np.arange(len(labels))
+    bars = ax.bar(x, centers, yerr=yerr, color=colors, capsize=8)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_ylabel(ylabel)
+    center_label = "median" if use_median else "mean"
+    ax.set_title(f"Total LCE uncertainty ({title_suffix}): {center_label} with 5th-95th percentile range")
+    ax.grid(axis="y", alpha=0.3)
+
+    for bar, center, lo, hi in zip(bars, centers, p05, p95):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            hi,
+            f"{center:.4f}\n[{lo:.4f}, {hi:.4f}]",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    plt.tight_layout()
+    # Figure returned below for Streamlit compatibility.
+    return fig
+
+
+def plot_all_lce_monte_carlo_boxplots(
+    mc_df: pd.DataFrame,
+    include_per_tonne_km: bool = True,
+    include_per_km: bool = True,
+    include_second_life: bool = True,
+):
+    """
+    Backwards-compatible wrapper.
+
+    For single-variable MC results containing multiple analysis names, this now
+    draws combined long boxplots instead of one figure per variable.
+    """
+    if include_per_tonne_km:
+        plot_single_variable_lce_monte_carlo_boxplots_combined(
+            mc_df,
+            metric="per_tonne_km",
+            include_second_life=include_second_life,
+        )
+    if include_per_km:
+        plot_single_variable_lce_monte_carlo_boxplots_combined(
+            mc_df,
+            metric="per_km",
+            include_second_life=include_second_life,
+        )
+
+
+def default_lce_monte_carlo_specs(
+    shared=None,
+    diesel_inp=None,
+    betc_inp=None,
+    bets_inp=None,
+):
+    """
+    Default LCE Monte Carlo uncertainty specifications.
+
+    Edit low/mode/high or relative_low/relative_mode/relative_high here to adjust
+    the uncertainty assumptions.
+    """
+    return [
+        {
+            "name": "curb/glider weight",
+            "distribution": "triangular",
+            "vehicle_values": {
+                "diesel": {
+                    "parameter": "truck_curb_weight_kg",
+                    "base_value": 11022,
+                },
+                "bet_c": {
+                    "parameter": "glider_weight_kg",
+                    "base_value": 9986,
+                },
+                "bet_s": {
+                    "parameter": "glider_weight_kg",
+                    "base_value": 9986,
+                },
+            },
+            # BET-C and BET-S use the same electric glider, so they share
+            # exactly the same Monte Carlo draw for glider_weight_kg.
+            # Diesel curb weight is sampled independently.
+            "shared_sample_groups": [["bet_c", "bet_s"]],
+            "relative_low": -0.20,
+            "relative_mode": 0.0,
+            "relative_high": 0.20,
+            "shared": shared,
+            "diesel_inp": diesel_inp,
+            "betc_inp": betc_inp,
+            "bets_inp": bets_inp,
+        },
+        {
+            "name": "Full-loaded VKT per day",
+            "distribution": "triangular",
+            "input_map": {
+                "shared": "full_loaded_km_per_day",
+            },
+            "low": 120.0,
+            "mode": 240.0,
+            "high": 432.0,
+            "shared": shared,
+            "diesel_inp": diesel_inp,
+            "betc_inp": betc_inp,
+            "bets_inp": bets_inp,
+        },
+        {
+            "name": "curb/glider production emission factor",
+            "distribution": "triangular",
+            "variable_map": {
+                "diesel": "truck_production_emission_factor_kg_per_kg",
+                "bet_c": "glider_production_emission_factor_kg_per_kg",
+                "bet_s": "glider_production_emission_factor_kg_per_kg",
+            },
+            "low": 6.59,
+            "mode": 7.0,
+            "high": 8.0,
+            "shared": shared,
+            "diesel_inp": diesel_inp,
+            "betc_inp": betc_inp,
+            "bets_inp": bets_inp,
+        },
+        {
+            "name": "battery production emission factor",
+            "distribution": "triangular",
+            "variable_map": {
+                "bet_c": "battery_production_emission_factor_kg_per_kwh",
+                "bet_s": "battery_production_emission_factor_kg_per_kwh",
+            },
+            "low": 40.0,
+            "mode": 57.0,
+            "high": 69.0,
+            "shared": shared,
+            "diesel_inp": diesel_inp,
+            "betc_inp": betc_inp,
+            "bets_inp": bets_inp,
+        },
+    ]
 
 
 ############ AEaaS Pricing Model  ################################################################
@@ -1637,32 +3267,34 @@ def run_margin_sweep_with_uncertainty(
     rng = np.random.default_rng(random_seed)
     rows = []
     scenario = subsidy_scenario_label(include_subsidy_uncertainty)
+    base_shared = SharedInputs()
 
     for margin in margins:
         for i in range(n_runs):
             # ===== sample uncertain inputs (same logic as baseline Monte Carlo) =====
-            sampled_discount_rate = sample_uncertain("discount_rate", 0.08, 0.10, 0.12, rng)
-            sampled_full_loaded_km_per_day = sample_uncertain("full_loaded_km_per_day", 192.0, 240.0, 288.0, rng)
+            sampled_discount_rate = sample_triangular(0.08, 0.10, 0.12, rng)
+            sampled_full_loaded_km_per_day = sample_triangular(192.0, 240.0, 288.0, rng)
+            sampled_diesel_price_multiplier = sample_triangular(0.80, 1.00, 1.35, rng)
 
-            sampled_peak_price_per_kwh = sample_uncertain("peak_price_per_kwh", 0.16, 0.20, 0.24, rng)
-            sampled_off_peak_share = sample_uncertain("off_peak_share", 0.30, 0.50, 0.70, rng)
+            sampled_peak_price_per_kwh = sample_triangular(0.16, 0.20, 0.24, rng)
+            sampled_off_peak_share = sample_triangular(0.30, 0.50, 0.70, rng)
 
-            sampled_bet_depot_energy_price_per_kwh = sample_uncertain("bet_depot_energy_price_per_kwh", 0.18, 0.22, 0.28, rng)
-            sampled_bet_public_energy_price_per_kwh = sample_uncertain("bet_public_energy_price_per_kwh", 0.30, 0.39, 0.50, rng)
+            sampled_bet_depot_energy_price_per_kwh = sample_triangular(0.18, 0.22, 0.28, rng)
+            sampled_bet_public_energy_price_per_kwh = sample_triangular(0.30, 0.39, 0.50, rng)
 
-            sampled_full_loaded_kwh_per_km_year1 = sample_uncertain("full_loaded_kwh_per_km_year1", 1.20, 1.37, 1.55, rng)
-            sampled_battery_recycle_value_ratio = sample_uncertain("battery_recycle_value_ratio", 0.05, 0.10, 0.20, rng)
-            sampled_glider_capex = sample_uncertain("glider_capex", 104000.0, 130000.0, 156000.0, rng)
-            sampled_battery_price_per_kwh = sample_uncertain("battery_price_per_kwh", 118.4, 148.0, 177.6, rng)
-            sampled_battery_lifetime_cycles = sample_uncertain("battery_lifetime_cycles", 1500.0, 2200.0, 3000.0, rng)
-            sampled_unladen_energy_saving = sample_uncertain("unladen_energy_saving", 0.20, 0.25, 0.30, rng)
+            sampled_full_loaded_kwh_per_km_year1 = sample_triangular(1.20, 1.37, 1.55, rng)
+            sampled_battery_recycle_value_ratio = sample_triangular(0.05, 0.10, 0.20, rng)
+            sampled_glider_capex = sample_triangular(104000.0, 130000.0, 156000.0, rng)
+            sampled_battery_price_per_kwh = sample_triangular(118.4, 148.0, 177.6, rng)
+            sampled_battery_lifetime_cycles = sample_triangular(1500.0, 2200.0, 3000.0, rng)
+            sampled_unladen_energy_saving = sample_triangular(0.20, 0.25, 0.30, rng)
 
-            sampled_battery_capacity_kwh = sample_uncertain("battery_capacity_kwh", 400.0, 513.0, 800.0, rng)
-            sampled_bet_depot_share = sample_uncertain("bet_depot_share", 0, 0.8, 1,rng)
+            sampled_battery_capacity_kwh = sample_triangular(400.0, 513.0, 800.0, rng)
+            sampled_bet_depot_share = sample_triangular(0, 0.8, 1,rng)
 
-            sampled_expected_station_utilisation = sample_uncertain("expected_station_utilisation", 0.20, 0.30, 0.50, rng)
-            sampled_expected_annual_return_on_battery_renting = sample_uncertain("expected_annual_return_on_battery_renting", 0.05, 0.15, 0.25, rng)
-            sampled_electricity_margin = sample_uncertain("electricity_margin", 0.2, 1, 1.5, rng)
+            sampled_expected_station_utilisation = sample_triangular(0.20, 0.30, 0.50, rng)
+            sampled_expected_annual_return_on_battery_renting = sample_triangular(0.05, 0.15, 0.25, rng)
+            sampled_electricity_margin = sample_triangular(0.2, 1, 1.5, rng)
 
             sampled_bet_subsidy = sample_bet_subsidy(
                 rng,
@@ -1670,13 +3302,28 @@ def run_margin_sweep_with_uncertainty(
             )
 
             # ===== build sampled inputs =====
-            shared_i = SharedInputs(
+            shared_i = replace(
+                base_shared,
                 discount_rate=sampled_discount_rate,
-                full_loaded_km_per_day=sampled_full_loaded_km_per_day,
+                full_loaded_km_per_day=(
+                    sampled_full_loaded_km_per_day
+                ),
+                diesel_depot_price_per_l=(
+                    base_shared.diesel_depot_price_per_l
+                    * sampled_diesel_price_multiplier
+                ),
+                diesel_public_price_per_l=(
+                    base_shared.diesel_public_price_per_l
+                    * sampled_diesel_price_multiplier
+                ),
                 peak_price_per_kwh=sampled_peak_price_per_kwh,
                 off_peak_share=sampled_off_peak_share,
-                bet_depot_energy_price_per_kwh=sampled_bet_depot_energy_price_per_kwh,
-                bet_public_energy_price_per_kwh=sampled_bet_public_energy_price_per_kwh,
+                bet_depot_energy_price_per_kwh=(
+                    sampled_bet_depot_energy_price_per_kwh
+                ),
+                bet_public_energy_price_per_kwh=(
+                    sampled_bet_public_energy_price_per_kwh
+                ),
                 bet_subsidy=sampled_bet_subsidy,
                 bet_depot_share=sampled_bet_depot_share,
                 electricity_margin=sampled_electricity_margin,
@@ -1780,6 +3427,7 @@ def get_drivers_of_gap(
             "expected_station_utilisation",
             "discount_rate",
             "full_loaded_km_per_day",
+            "diesel_price_multiplier",
             "peak_price_per_kwh",
             "off_peak_share",
             "bet_depot_energy_price_per_kwh",
@@ -1795,7 +3443,6 @@ def get_drivers_of_gap(
             "electricity_margin",
             "bet_depot_share",
             "bet_subsidy",
-            
         ]
 
     rows = []
@@ -1856,7 +3503,7 @@ def run_sensitivity_analysis(
             battery_recycle_value_ratio=shared.battery_recycle_value_ratio
         )
 
-    # 允许 target_class 既可以是字符串，也可以是列表
+    # target_class can be a string or a list.
     if isinstance(target_class, str):
         target_classes = [target_class]
     else:
@@ -1870,9 +3517,12 @@ def run_sensitivity_analysis(
     bet_c_vs_diesel = []
     bet_s_vs_diesel = []
     bet_s_vs_bet_c = []
-
     x_labels = []
-    
+
+    bet_c_vs_diesel_per_km = []
+    bet_s_vs_diesel_per_km = []
+    bet_s_vs_bet_c_per_km = []
+
     for ch in changes:
         new_value = base_value * (1 + ch)
 
@@ -1881,9 +3531,23 @@ def run_sensitivity_analysis(
         betc_i = betc_inp
         bets_i = bets_inp
 
-        # 可以同时修改多个 class
         if "shared" in target_classes:
-            shared_i = update_input(shared_i, variable_name, new_value)
+            if variable_name == "diesel_price_multiplier":
+                shared_i = replace(
+                    shared_i,
+                    diesel_depot_price_per_l=(
+                        shared.diesel_depot_price_per_l * new_value
+                    ),
+                    diesel_public_price_per_l=(
+                        shared.diesel_public_price_per_l * new_value
+                    ),
+                )
+            else:
+                shared_i = update_input(
+                    shared_i,
+                    variable_name,
+                    new_value,
+                )
 
         if "diesel" in target_classes:
             diesel_i = update_input(diesel_i, variable_name, new_value)
@@ -1894,17 +3558,17 @@ def run_sensitivity_analysis(
         if "bets" in target_classes:
             bets_i = update_input(bets_i, variable_name, new_value)
 
-        # shared 改完后，继续同步 recycle ratio 到 BETC/BETS 默认输入
+        # If shared recycle ratio is changed, keep BET-C/BET-S default inputs synced.
         if "shared" in target_classes:
             betc_i = update_input(
                 betc_i,
                 "battery_recycle_value_ratio",
-                shared_i.battery_recycle_value_ratio
+                shared_i.battery_recycle_value_ratio,
             )
             bets_i = update_input(
                 bets_i,
                 "battery_recycle_value_ratio",
-                shared_i.battery_recycle_value_ratio
+                shared_i.battery_recycle_value_ratio,
             )
 
         results = run_model(
@@ -1926,8 +3590,20 @@ def run_sensitivity_analysis(
         bet_c_vs_diesel.append(gaps["bet_c_vs_diesel"])
         bet_s_vs_diesel.append(gaps["bet_s_vs_diesel"])
         bet_s_vs_bet_c.append(gaps["bet_s_vs_bet_c"])
+        bet_c_vs_diesel_per_km.append(gaps["bet_c_vs_diesel_per_km"])
+        bet_s_vs_diesel_per_km.append(gaps["bet_s_vs_diesel_per_km"])
+        bet_s_vs_bet_c_per_km.append(gaps["bet_s_vs_bet_c_per_km"])
 
-        if "rate" in variable_name or "utilisation" in variable_name or "share" in variable_name or "ratio" in variable_name or "return" in variable_name or "margin" in variable_name: #改单位
+        if variable_name == "diesel_price_multiplier":
+            x_labels.append(f"{new_value:.0%}")
+        elif (
+            "rate" in variable_name
+            or "utilisation" in variable_name
+            or "share" in variable_name
+            or "ratio" in variable_name
+            or "return" in variable_name
+            or "margin" in variable_name
+        ):
             x_labels.append(f"{new_value:.0%}")
         elif "km" in variable_name:
             x_labels.append(f"{new_value:.0f}")
@@ -1944,31 +3620,63 @@ def run_sensitivity_analysis(
         "bet_c_vs_diesel": bet_c_vs_diesel,
         "bet_s_vs_diesel": bet_s_vs_diesel,
         "bet_s_vs_bet_c": bet_s_vs_bet_c,
+        "bet_c_vs_diesel_per_km": bet_c_vs_diesel_per_km,
+        "bet_s_vs_diesel_per_km": bet_s_vs_diesel_per_km,
+        "bet_s_vs_bet_c_per_km": bet_s_vs_bet_c_per_km,
         "x_labels": x_labels,
     }
 
-# Run multiple sensitivity analyses for different variables
-def run_multiple_sensitivity_analyses(specs):
-    all_results = []
 
+# Run multiple sensitivity analyses for different variables
+def run_multiple_sensitivity_analyses(
+    specs,
+    shared=None,
+    diesel_inp=None,
+    betc_inp=None,
+    bets_inp=None,
+):
+    """Run the configured TCO sensitivity analyses from a common baseline.
+
+    The optional baseline inputs make the function usable from Streamlit while
+    preserving the original local-script behaviour when they are omitted.
+    """
+    if shared is None:
+        shared = SharedInputs()
+    if diesel_inp is None:
+        diesel_inp = DieselInputs()
+    if betc_inp is None:
+        betc_inp = BETCInputs(
+            battery_recycle_value_ratio=shared.battery_recycle_value_ratio
+        )
+    if bets_inp is None:
+        bets_inp = BETSInputs(
+            battery_recycle_value_ratio=shared.battery_recycle_value_ratio
+        )
+
+    all_results = []
     for spec in specs:
-        
         if "direct_values" in spec:
             result = run_sensitivity_analysis_direct_values(
                 target_class=spec["target_class"],
                 variable_name=spec["variable_name"],
                 values=spec["direct_values"],
                 base_value=spec.get("base_value"),
+                shared=shared,
+                diesel_inp=diesel_inp,
+                betc_inp=betc_inp,
+                bets_inp=bets_inp,
             )
         else:
             changes = spec.get("changes", [-0.40, -0.20, 0.0, 0.20, 0.40])
-
-
             result = run_sensitivity_analysis(
                 target_class=spec["target_class"],
                 variable_name=spec["variable_name"],
                 base_value=spec["base_value"],
                 changes=changes,
+                shared=shared,
+                diesel_inp=diesel_inp,
+                betc_inp=betc_inp,
+                bets_inp=bets_inp,
             )
         all_results.append(result)
 
@@ -1981,6 +3689,12 @@ sensitivity_specs = [
         "variable_name": "full_loaded_km_per_day",
         "base_value": 240.0,
         "changes": [-0.50, -0.20, 0.0, 0.40, 0.80],
+    },
+    {
+        "target_class": "shared",
+        "variable_name": "diesel_price_multiplier",
+        "base_value": 1.00,
+        "changes": [-0.3, -0.15, 0.00, 0.15, 0.3],
     },
     {
         "target_class": "shared",
@@ -2062,6 +3776,10 @@ def run_sensitivity_analysis_direct_values(
     variable_name,
     values,
     base_value=None,
+    shared=None,
+    diesel_inp=None,
+    betc_inp=None,
+    bets_inp=None,
 ):
     if isinstance(target_class, str):
         target_classes = [target_class]
@@ -2071,21 +3789,46 @@ def run_sensitivity_analysis_direct_values(
     bet_c_vs_diesel = []
     bet_s_vs_diesel = []
     bet_s_vs_bet_c = []
+    bet_c_vs_diesel_per_km = []
+    bet_s_vs_diesel_per_km = []
+    bet_s_vs_bet_c_per_km = []
     x_labels = []
 
+    if shared is None:
+        shared = SharedInputs()
+    if diesel_inp is None:
+        diesel_inp = DieselInputs()
+    if betc_inp is None:
+        betc_inp = BETCInputs(
+            battery_recycle_value_ratio=shared.battery_recycle_value_ratio
+        )
+    if bets_inp is None:
+        bets_inp = BETSInputs(
+            battery_recycle_value_ratio=shared.battery_recycle_value_ratio
+        )
+
     for value in values:
-        shared_i = SharedInputs()
-        diesel_i = DieselInputs()
-        betc_i = BETCInputs(
-            battery_recycle_value_ratio=shared_i.battery_recycle_value_ratio
-        )
-        bets_i = BETSInputs(
-            battery_recycle_value_ratio=shared_i.battery_recycle_value_ratio
-        )
+        shared_i = shared
+        diesel_i = diesel_inp
+        betc_i = betc_inp
+        bets_i = bets_inp
 
         # ===== update variable =====
         if "shared" in target_classes:
-            shared_i = update_input(shared_i, variable_name, value)
+            if variable_name == "years":
+                horizon = int(value)
+
+                shared_i = replace(
+                    shared_i,
+                    years=horizon,
+                    loan_term_years=horizon,
+                )
+            else:
+                shared_i = update_input(
+                    shared_i,
+                    variable_name,
+                    value,
+                )
 
         if "diesel" in target_classes:
             diesel_i = update_input(diesel_i, variable_name, value)
@@ -2108,6 +3851,9 @@ def run_sensitivity_analysis_direct_values(
         bet_c_vs_diesel.append(gaps["bet_c_vs_diesel"])
         bet_s_vs_diesel.append(gaps["bet_s_vs_diesel"])
         bet_s_vs_bet_c.append(gaps["bet_s_vs_bet_c"])
+        bet_c_vs_diesel_per_km.append(gaps["bet_c_vs_diesel_per_km"])
+        bet_s_vs_diesel_per_km.append(gaps["bet_s_vs_diesel_per_km"])
+        bet_s_vs_bet_c_per_km.append(gaps["bet_s_vs_bet_c_per_km"])
 
         x_labels.append(f"{value:,.0f}")
 
@@ -2120,6 +3866,9 @@ def run_sensitivity_analysis_direct_values(
         "bet_c_vs_diesel": bet_c_vs_diesel,
         "bet_s_vs_diesel": bet_s_vs_diesel,
         "bet_s_vs_bet_c": bet_s_vs_bet_c,
+        "bet_c_vs_diesel_per_km": bet_c_vs_diesel_per_km,
+        "bet_s_vs_diesel_per_km": bet_s_vs_diesel_per_km,
+        "bet_s_vs_bet_c_per_km": bet_s_vs_bet_c_per_km,
     }
 
 
@@ -2130,40 +3879,14 @@ def sample_triangular(left, mode, right, rng):
     return rng.triangular(left, mode, right)
 
 
-# Sidebar-editable Monte Carlo uncertainty ranges.
-# The app can set this before running cached simulations.
-UNCERTAINTY_OVERRIDES = {}
-
-
-def set_uncertainty_overrides(overrides=None):
-    global UNCERTAINTY_OVERRIDES
-    UNCERTAINTY_OVERRIDES = overrides or {}
-
-
-def _uncertainty_bounds(variable, left, mode, right):
-    override = UNCERTAINTY_OVERRIDES.get(variable, {}) if isinstance(UNCERTAINTY_OVERRIDES, dict) else {}
-    left = float(override.get("left", left))
-    mode = float(override.get("mode", mode))
-    right = float(override.get("right", right))
-    if left > right:
-        left, right = right, left
-    mode = min(max(mode, left), right)
-    return left, mode, right
-
-
-def sample_uncertain(variable, left, mode, right, rng):
-    left, mode, right = _uncertainty_bounds(variable, left, mode, right)
-    return sample_triangular(left, mode, right, rng)
-
-
 def sample_bet_subsidy(rng, include_subsidy_uncertainty=True):
     """Sample BET purchase subsidy for Monte Carlo runs.
 
-    include_subsidy_uncertainty=True  -> triangular(0, 0, 120000)
+    include_subsidy_uncertainty=True  -> triangular(0, 0, 81000)
     include_subsidy_uncertainty=False -> fixed 0
     """
     if include_subsidy_uncertainty:
-        return sample_uncertain("bet_subsidy", 0.0, 0.0, 120000.0, rng)
+        return sample_triangular(0.0, 0.0, 81000.0, rng)
     return 0.0
 
 
@@ -2175,7 +3898,7 @@ def subsidy_scenario_label(include_subsidy_uncertainty=True):
 # =========================================================
 
 # Define uncertain variables and their distributions
-def get_uncertainty_specs(include_subsidy_uncertainty=True, uncertainty_overrides=None):
+def get_uncertainty_specs(include_subsidy_uncertainty=True):
     """
     target_class:
         - "shared"
@@ -2205,6 +3928,13 @@ def get_uncertainty_specs(include_subsidy_uncertainty=True, uncertainty_override
             "left": 192.0,
             "mode": 240.0,
             "right": 288.0,
+        },
+        {
+            "variable": "diesel_price_multiplier",
+            "target_class": "shared",
+            "left": 0.80,
+            "mode": 1.00,
+            "right": 1.35,
         },
         {
             "variable": "peak_price_per_kwh",
@@ -2315,18 +4045,8 @@ def get_uncertainty_specs(include_subsidy_uncertainty=True, uncertainty_override
             "target_class": "shared",
             "left": 0,
             "mode": 0,
-            "right": 120000.0,
+            "right": 81000.0,
         })
-
-    overrides = uncertainty_overrides if uncertainty_overrides is not None else UNCERTAINTY_OVERRIDES
-    if overrides:
-        for spec in specs:
-            variable = spec["variable"]
-            if variable in overrides:
-                left, mode, right = _uncertainty_bounds(
-                    variable, spec["left"], spec["mode"], spec["right"]
-                )
-                spec["left"], spec["mode"], spec["right"] = left, mode, right
 
     return specs
 
@@ -2348,7 +4068,24 @@ def apply_single_variable_change(shared, diesel_inp, betc_inp, bets_inp, spec, s
         target_class = [target_class]
 
     if "shared" in target_class:
-        shared_i = update_input(shared_i, variable_name, sampled_value)
+        if variable_name == "diesel_price_multiplier":
+            shared_i = replace(
+                shared_i,
+                diesel_depot_price_per_l=(
+                    shared_i.diesel_depot_price_per_l
+                    * sampled_value
+                ),
+                diesel_public_price_per_l=(
+                    shared_i.diesel_public_price_per_l
+                    * sampled_value
+                ),
+            )
+        else:
+            shared_i = update_input(
+                shared_i,
+                variable_name,
+                sampled_value,
+            )
 
     if "diesel" in target_class:
         diesel_i = update_input(diesel_i, variable_name, sampled_value)
@@ -2413,6 +4150,9 @@ def run_independent_variable_monte_carlo(n_runs=500, random_seed=42, include_sub
             diesel_tco = results["diesel"]["tco_discounted"]
             betc_tco = results["bet_c"]["tco_discounted"]
             bets_tco = results["bet_s"]["tco_discounted"]
+            diesel_tco_per_km = results["diesel"]["tco_per_km_discounted"]
+            betc_tco_per_km = results["bet_c"]["tco_per_km_discounted"]
+            bets_tco_per_km = results["bet_s"]["tco_per_km_discounted"]
 
             rows.append({
                 "subsidy_scenario": scenario,
@@ -2427,6 +4167,10 @@ def run_independent_variable_monte_carlo(n_runs=500, random_seed=42, include_sub
                 "gap_bet_c_diesel": betc_tco - diesel_tco,
                 "gap_bet_s_diesel": bets_tco - diesel_tco,
                 "gap_bet_s_bet_c": bets_tco - betc_tco,
+
+                "gap_bet_c_diesel_per_km": betc_tco_per_km - diesel_tco_per_km,
+                "gap_bet_s_diesel_per_km": bets_tco_per_km - diesel_tco_per_km,
+                "gap_bet_s_bet_c_per_km": bets_tco_per_km - betc_tco_per_km,
             })
 
     return pd.DataFrame(rows)
@@ -2454,50 +4198,64 @@ def run_monte_carlo_simulation(n_runs=500, random_seed=42, include_subsidy_uncer
     rng = np.random.default_rng(random_seed)
     rows = []
     scenario = subsidy_scenario_label(include_subsidy_uncertainty)
+    base_shared = SharedInputs()
 
     for i in range(n_runs):
         # ===== 1) sample uncertain inputs (triangular distributions) =====
-        sampled_discount_rate = sample_uncertain("discount_rate", 0.08, 0.10, 0.12, rng)
+        sampled_discount_rate = sample_triangular(0.08, 0.10, 0.12, rng)
 
-        sampled_full_loaded_km_per_day = sample_uncertain("full_loaded_km_per_day", 192.0, 240.0, 288.0, rng)
+        sampled_full_loaded_km_per_day = sample_triangular(192.0, 240.0, 288.0, rng)
+        sampled_diesel_price_multiplier = sample_triangular(0.80, 1.00, 1.35, rng)
 
-        sampled_peak_price_per_kwh = sample_uncertain("peak_price_per_kwh", 0.16, 0.20, 0.24, rng)
-        sampled_off_peak_share = sample_uncertain("off_peak_share", 0.30, 0.50, 0.70, rng)
+        sampled_peak_price_per_kwh = sample_triangular(0.16, 0.20, 0.24, rng)
+        sampled_off_peak_share = sample_triangular(0.30, 0.50, 0.70, rng)
 
-        sampled_bet_depot_energy_price_per_kwh = sample_uncertain("bet_depot_energy_price_per_kwh", 0.18, 0.22, 0.28, rng)
-        sampled_bet_public_energy_price_per_kwh = sample_uncertain("bet_public_energy_price_per_kwh", 0.30, 0.39, 0.50, rng)
+        sampled_bet_depot_energy_price_per_kwh = sample_triangular(0.18, 0.22, 0.28, rng)
+        sampled_bet_public_energy_price_per_kwh = sample_triangular(0.30, 0.39, 0.50, rng)
 
         # BET-C and BET-S jointly changing variables
-        sampled_full_loaded_kwh_per_km_year1 = sample_uncertain("full_loaded_kwh_per_km_year1", 1.20, 1.37, 1.55, rng)
-        sampled_battery_recycle_value_ratio = sample_uncertain("battery_recycle_value_ratio", 0.05, 0.10, 0.20, rng)
-        sampled_glider_capex = sample_uncertain("glider_capex", 104000.0, 130000.0, 156000.0, rng)
-        sampled_battery_price_per_kwh = sample_uncertain("battery_price_per_kwh", 118.4, 148.0, 177.6, rng)
-        sampled_battery_lifetime_cycles = sample_uncertain("battery_lifetime_cycles", 1500.0, 2200.0, 3000.0, rng)
-        sampled_unladen_energy_saving = sample_uncertain("unladen_energy_saving", 0.2, 0.25, 0.3, rng)
+        sampled_full_loaded_kwh_per_km_year1 = sample_triangular(1.20, 1.37, 1.55, rng)
+        sampled_battery_recycle_value_ratio = sample_triangular(0.05, 0.10, 0.20, rng)
+        sampled_glider_capex = sample_triangular(104000.0, 130000.0, 156000.0, rng)
+        sampled_battery_price_per_kwh = sample_triangular(118.4, 148.0, 177.6, rng)
+        sampled_battery_lifetime_cycles = sample_triangular(1500.0, 2200.0, 3000.0, rng)
+        sampled_unladen_energy_saving = sample_triangular(0.2, 0.25, 0.3, rng)
         sampled_bet_subsidy = sample_bet_subsidy(
             rng,
             include_subsidy_uncertainty=include_subsidy_uncertainty,
         )
 
         # BET-C only
-        sampled_battery_capacity_kwh = sample_uncertain("battery_capacity_kwh", 400.0, 513.0, 800.0, rng)
-        sampled_bet_depot_share = sample_uncertain("bet_depot_share", 0, 0.8, 1,rng)
+        sampled_battery_capacity_kwh = sample_triangular(400.0, 513.0, 800.0, rng)
+        sampled_bet_depot_share = sample_triangular(0, 0.8, 1,rng)
         # BET-S only
-
-
-        sampled_expected_station_utilisation = sample_uncertain("expected_station_utilisation", 0.20, 0.30, 0.50, rng)
-        sampled_expected_annual_return_on_battery_renting = sample_uncertain("expected_annual_return_on_battery_renting", 0.05, 0.15, 0.25, rng)
-        sampled_electricity_margin = sample_uncertain("electricity_margin", 0.2, 1, 1.5, rng)
-
+        sampled_expected_station_utilisation = sample_triangular(0.20, 0.30, 0.50, rng)
+        sampled_expected_annual_return_on_battery_renting = sample_triangular(0.05, 0.15, 0.25, rng)
+        sampled_electricity_margin = sample_triangular(0.2, 1, 1.5, rng)
 
         # ===== 2) build sampled inputs =====
-        shared_i = SharedInputs(
+        shared_i = replace(
+            base_shared,
             discount_rate=sampled_discount_rate,
-            full_loaded_km_per_day=sampled_full_loaded_km_per_day,
+            full_loaded_km_per_day=(
+                sampled_full_loaded_km_per_day
+            ),
+            diesel_depot_price_per_l=(
+                base_shared.diesel_depot_price_per_l
+                * sampled_diesel_price_multiplier
+            ),
+            diesel_public_price_per_l=(
+                base_shared.diesel_public_price_per_l
+                * sampled_diesel_price_multiplier
+            ),
             peak_price_per_kwh=sampled_peak_price_per_kwh,
             off_peak_share=sampled_off_peak_share,
-            bet_depot_energy_price_per_kwh=sampled_bet_depot_energy_price_per_kwh,
-            bet_public_energy_price_per_kwh=sampled_bet_public_energy_price_per_kwh,
+            bet_depot_energy_price_per_kwh=(
+                sampled_bet_depot_energy_price_per_kwh
+            ),
+            bet_public_energy_price_per_kwh=(
+                sampled_bet_public_energy_price_per_kwh
+            ),
             bet_subsidy=sampled_bet_subsidy,
             bet_depot_share=sampled_bet_depot_share,
             electricity_margin=sampled_electricity_margin,
@@ -2513,6 +4271,7 @@ def run_monte_carlo_simulation(n_runs=500, random_seed=42, include_subsidy_uncer
             unladen_energy_saving=sampled_unladen_energy_saving,
             full_loaded_kwh_per_km_year1=sampled_full_loaded_kwh_per_km_year1,
             battery_capacity_kwh=sampled_battery_capacity_kwh,
+            
         )
 
         bets_i = BETSInputs(
@@ -2524,6 +4283,8 @@ def run_monte_carlo_simulation(n_runs=500, random_seed=42, include_subsidy_uncer
             full_loaded_kwh_per_km_year1=sampled_full_loaded_kwh_per_km_year1,
             expected_station_utilisation=sampled_expected_station_utilisation,
             expected_annual_return_on_battery_renting=sampled_expected_annual_return_on_battery_renting,
+            
+
             
         )
 
@@ -2540,12 +4301,29 @@ def run_monte_carlo_simulation(n_runs=500, random_seed=42, include_subsidy_uncer
         gap_bet_s_diesel = bet_s_tco - diesel_tco
         gap_bet_s_bet_c = bet_s_tco - bet_c_tco
 
+        diesel_tco_per_km = diesel["tco_per_km_discounted"]
+        bet_c_tco_per_km = bet_c["tco_per_km_discounted"]
+        bet_s_tco_per_km = bet_s["tco_per_km_discounted"]
+
+        gap_bet_c_diesel_per_km = bet_c_tco_per_km - diesel_tco_per_km
+        gap_bet_s_diesel_per_km = bet_s_tco_per_km - diesel_tco_per_km
+        gap_bet_s_bet_c_per_km = bet_s_tco_per_km - bet_c_tco_per_km
+
         rows.append({
             "subsidy_scenario": scenario,
             "iteration": i + 1,
 
             "discount_rate": sampled_discount_rate,
             "full_loaded_km_per_day": sampled_full_loaded_km_per_day,
+            "diesel_price_multiplier": (
+                sampled_diesel_price_multiplier
+            ),
+            "diesel_depot_price_per_l": (
+                shared_i.diesel_depot_price_per_l
+            ),
+            "diesel_public_price_per_l": (
+                shared_i.diesel_public_price_per_l
+            ),
             "peak_price_per_kwh": sampled_peak_price_per_kwh,
             "off_peak_share": sampled_off_peak_share,
             "bet_depot_energy_price_per_kwh": sampled_bet_depot_energy_price_per_kwh,
@@ -2574,6 +4352,14 @@ def run_monte_carlo_simulation(n_runs=500, random_seed=42, include_subsidy_uncer
             "gap_bet_c_diesel": gap_bet_c_diesel,
             "gap_bet_s_diesel": gap_bet_s_diesel,
             "gap_bet_s_bet_c": gap_bet_s_bet_c,
+
+            "diesel_tco_per_km": diesel_tco_per_km,
+            "bet_c_tco_per_km": bet_c_tco_per_km,
+            "bet_s_tco_per_km": bet_s_tco_per_km,
+
+            "gap_bet_c_diesel_per_km": gap_bet_c_diesel_per_km,
+            "gap_bet_s_diesel_per_km": gap_bet_s_diesel_per_km,
+            "gap_bet_s_bet_c_per_km": gap_bet_s_bet_c_per_km,
         })
 
     return pd.DataFrame(rows)
@@ -2675,6 +4461,13 @@ def run_projection_monte_carlo(
                 rng
             )
 
+            sampled_diesel_price_multiplier = sample_triangular(
+                0.80,
+                1.00,
+                1.35,
+                rng,
+            )
+
             sampled_peak_price_per_kwh = sample_triangular(
                 shared_base.peak_price_per_kwh * 0.8,
                 shared_base.peak_price_per_kwh,
@@ -2760,11 +4553,25 @@ def run_projection_monte_carlo(
             shared_i = replace(
                 shared_base,
                 discount_rate=sampled_discount_rate,
-                full_loaded_km_per_day=sampled_full_loaded_km_per_day,
+                full_loaded_km_per_day=(
+                    sampled_full_loaded_km_per_day
+                ),
+                diesel_depot_price_per_l=(
+                    shared_base.diesel_depot_price_per_l
+                    * sampled_diesel_price_multiplier
+                ),
+                diesel_public_price_per_l=(
+                    shared_base.diesel_public_price_per_l
+                    * sampled_diesel_price_multiplier
+                ),
                 peak_price_per_kwh=sampled_peak_price_per_kwh,
                 off_peak_share=sampled_off_peak_share,
-                bet_depot_energy_price_per_kwh=sampled_bet_depot_energy_price_per_kwh,
-                bet_public_energy_price_per_kwh=sampled_bet_public_energy_price_per_kwh,
+                bet_depot_energy_price_per_kwh=(
+                    sampled_bet_depot_energy_price_per_kwh
+                ),
+                bet_public_energy_price_per_kwh=(
+                    sampled_bet_public_energy_price_per_kwh
+                ),
                 bet_subsidy=sampled_bet_subsidy,
             )
 
@@ -3349,21 +5156,21 @@ def plot_tco_per_kwh_projection(df):
 def plot_sensitivity_bar(sensitivity_results, title=None):    #画敏感性分析图改名字
 
     name_map = {
-                "battery_price_per_kwh": "Battery price (£/kWh)",
-                "battery_recycle_value_ratio": "Battery residual percentage",
-                "full_loaded_km_per_day": "Full-loaded daily mileage (km/day)",
-                "diesel_public_price_per_l": "Diesel price (£/L)",
-                "discount_rate": "Discount rate (%)",
-                "bet_depot_energy_price_per_kwh": "Electricity price (£/kWh)",
+                "battery_price_per_kwh": "Battery Price (£/kWh)",
+                "battery_recycle_value_ratio": "Battery Residual Percentage",
+                "full_loaded_km_per_day": "Full-loaded Daily Mileage (km/day)",
+                "diesel_price_multiplier": "Diesel Price Index",
+                "discount_rate": "Discount Rate (%)",
+                "bet_depot_energy_price_per_kwh": "Electricity Price (£/kWh)",
                 "expected_station_utilisation": "Expected Station Utilisation",
                 "expected_annual_return_on_battery_renting": "Expected Annual Return on Battery Renting",
                 "electricity_margin": "Target Electricity Margin",
                 "bet_subsidy": "BET Purchase Subsidy",
                 "bet_depot_share": "Depot Slow Charging Percentage",
                 "shift_per_day": "Shift per Day",
-                "off_peak_share": "Off-peak Swapping Percentage",
-                "years": "TCO Horizon",
                 "battery_lifetime_cycles": "Battery Lifetime Cycles",
+                "off_peak_share": "Percentage of Swaps Paying at the Lower Off-Peak Electricity Price",
+                "years": "TCO Horizon"
     }
             
     if "x_labels" in sensitivity_results:
@@ -3409,7 +5216,9 @@ def plot_sensitivity_bar(sensitivity_results, title=None):    #画敏感性分�
 
         display_name = name_map.get(var_name, var_name)
 
-        if "price" in var_name or "cost" in var_name:
+        if var_name == "diesel_price_multiplier":
+            base_str = f"{base_value:.0%}"
+        elif "price" in var_name or "cost" in var_name:
             base_str = f"£{base_value:.2f}"
         elif "rate" in var_name:
             base_str = f"{base_value*100:.1f}%"
@@ -3440,6 +5249,86 @@ def plot_sensitivity_bar(sensitivity_results, title=None):    #画敏感性分�
     plt.tight_layout()
     return plt.gcf()
 
+def plot_sensitivity_bar_per_km(sensitivity_results, title=None):
+    name_map = {
+        "battery_price_per_kwh": "Battery Price (£/kWh)",
+        "battery_recycle_value_ratio": "Battery Residual Percentage",
+        "full_loaded_km_per_day": "Full-loaded Daily Mileage (km/day)",
+        "diesel_price_multiplier": "Diesel Price Index",
+        "discount_rate": "Discount Rate (%)",
+        "bet_depot_energy_price_per_kwh": "Electricity Price (£/kWh)",
+        "expected_station_utilisation": "Expected Station Utilisation",
+        "expected_annual_return_on_battery_renting": "Expected Annual Return on Battery Renting",
+        "electricity_margin": "Target Electricity Margin",
+        "bet_subsidy": "BET Purchase Subsidy",
+        "bet_depot_share": "Depot Slow Charging Percentage",
+        "shift_per_day": "Shift per Day",
+        "battery_lifetime_cycles": "Battery Lifetime Cycles",
+        "off_peak_share": "Percentage of Swaps Paying at the Lower Off-Peak Electricity Price",
+        "years": "TCO Horizon",
+    }
+
+    labels = sensitivity_results.get("x_labels", sensitivity_results["labels"])
+
+    bet_c_vs_diesel = sensitivity_results["bet_c_vs_diesel_per_km"]
+    bet_s_vs_diesel = sensitivity_results["bet_s_vs_diesel_per_km"]
+    bet_s_vs_bet_c = sensitivity_results["bet_s_vs_bet_c_per_km"]
+
+    x = range(len(labels))
+    width = 0.25
+
+    plt.figure(figsize=(10, 6))
+
+    bars1 = plt.bar(
+        [i - width for i in x],
+        bet_c_vs_diesel,
+        width=width,
+        label="BET-C - Diesel",
+    )
+    bars2 = plt.bar(
+        x,
+        bet_s_vs_diesel,
+        width=width,
+        label="BET-S - Diesel",
+    )
+    bars3 = plt.bar(
+        [i + width for i in x],
+        bet_s_vs_bet_c,
+        width=width,
+        label="BET-S - BET-C",
+    )
+
+    plt.axhline(0)
+    plt.xticks(list(x), labels)
+
+    var_name = sensitivity_results["variable_name"]
+    display_name = name_map.get(var_name, var_name)
+
+    plt.xlabel(display_name)
+    plt.ylabel("TCO per km Gap (£/km)")
+
+    if title is None:
+        title = f"Sensitivity Analysis: {display_name} - TCO per km Gap"
+
+    plt.title(title)
+    plt.legend()
+
+    for bars in [bars1, bars2, bars3]:
+        for bar in bars:
+            v = bar.get_height()
+            va = "bottom" if v >= 0 else "top"
+            plt.text(
+                bar.get_x() + bar.get_width() / 2,
+                v,
+                f"{v:,.3f}",
+                ha="center",
+                va=va,
+                fontsize=8,
+            )
+
+    plt.tight_layout()
+    return plt.gcf()
+    
 # Summarize uncertainty results using percentiles for plots
 def summarize_margin_uncertainty(df):
     rows = []
@@ -3550,7 +5439,7 @@ def plot_margin_vs_freight_all_in_per_km_with_uncertainty(summary_df, title_suff
     plt.xlabel("Asset-manager margin (%)")
     plt.ylabel("Cost (£/km)")
     plt.title(f"Impact of Asset-manager Margin on Freight Cost per km with Uncertainty {title_suffix}".strip())
-    plt.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
+    plt.legend()
     plt.text(
         0.01, 0.98,
         UNCERTAINTY_NOTE,
@@ -3595,7 +5484,7 @@ def plot_margin_vs_gap_with_uncertainty(summary_df, title_suffix=""):
     plt.xlabel("Asset-manager margin (%)")
     plt.ylabel("Cost Gap (£/km)")
     plt.title(f"Effect of Asset-manager Margin on BET-S AEaaS - Diesel Gap with Uncertainty {title_suffix}".strip())
-    plt.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
+    plt.legend()
     plt.text(
         0.01, 0.98,
         UNCERTAINTY_NOTE,
@@ -3815,7 +5704,7 @@ def plot_independent_tco_boxplots(df, figsize=(24, 8)):
     )
     
     plt.tight_layout()
-    return plt.gcf()
+    return fig
 
 
 def plot_independent_gap_boxplots(df, figsize=(24, 8)):
@@ -3930,7 +5819,7 @@ def plot_independent_gap_boxplots(df, figsize=(24, 8)):
     ax.set_xlim(min(positions) - 1, max(positions) + 1)
 
     plt.tight_layout()
-    return plt.gcf()
+    return fig
 
 
 
@@ -4011,7 +5900,7 @@ def plot_independent_bets_vs_diesel_boxplot(df, figsize=(18, 7)):
 
 
     plt.tight_layout()
-    return plt.gcf()
+    return fig
 
 
 
@@ -4052,51 +5941,133 @@ def plot_margin_vs_gap_by_scenario(summary_df):
 
 
 def plot_monte_carlo_histograms_by_scenario(df):
-    """Overlay with-subsidy and no-subsidy MC histograms in one 2x3 figure."""
+    """Overlay with-subsidy and no-subsidy MC histograms in the same figures."""
+
     if "subsidy_scenario" not in df.columns:
         return plot_monte_carlo_histograms(df)
 
     histogram_specs = [
-        ("diesel_tco", "Diesel discounted TCO", "TCO (£)"),
-        ("bet_c_tco", "BET-C discounted TCO", "TCO (£)"),
-        ("bet_s_tco", "BET-S discounted TCO", "TCO (£)"),
-        ("gap_bet_c_diesel", "BET-C - Diesel", "TCO gap (£)"),
-        ("gap_bet_s_diesel", "BET-S - Diesel", "TCO gap (£)"),
-        ("gap_bet_s_bet_c", "BET-S - BET-C", "TCO gap (£)"),
+        ("diesel_tco", "Monte Carlo: Diesel Truck Discounted TCO", "TCO (£)"),
+        ("bet_c_tco", "Monte Carlo: BET-C Discounted TCO", "TCO (£)"),
+        ("bet_s_tco", "Monte Carlo: BET-S Discounted TCO", "TCO (£)"),
+        ("gap_bet_c_diesel", "Monte Carlo: BET-C - Diesel", "TCO Gap (£)"),
+        ("gap_bet_s_diesel", "Monte Carlo: BET-S - Diesel", "TCO Gap (£)"),
+        ("gap_bet_s_bet_c", "Monte Carlo: BET-S - BET-C", "TCO Gap (£)"),
     ]
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 8.5))
-    axes = axes.flatten()
+    for col, title, xlabel in histogram_specs:
 
-    for ax, (col, title, xlabel) in zip(axes, histogram_specs):
+        plt.figure(figsize=(8, 5))
+
         for scenario, sub_df in df.groupby("subsidy_scenario"):
-            values = sub_df[col].dropna()
-            ax.hist(values, bins=25, alpha=0.42, label=scenario)
-            mean_value = values.mean()
-            ax.axvline(mean_value, linestyle="--", linewidth=1.4)
 
-            label = "No subsidy" if scenario.lower().startswith("no") else "With subsidy"
-            y = 0.88 if label == "No subsidy" else 0.78
-            ax.text(
-                0.98,
-                y,
-                f"Mean ({label}) = £{mean_value:,.0f}",
-                transform=ax.transAxes,
-                fontsize=8,
-                ha="right",
-                va="top",
-                bbox=dict(facecolor="white", alpha=0.65, edgecolor="none"),
+            plt.hist(
+                sub_df[col],
+                bins=20,
+                alpha=0.45,
+                label=scenario
             )
 
-        ax.set_title(title)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel("Frequency")
-        ax.legend(fontsize=8)
+            mean_value = sub_df[col].mean()
 
-    fig.suptitle("Monte Carlo distributions: with subsidy vs no subsidy", fontsize=16, y=1.02)
-    fig.tight_layout()
-    return fig
+            # mean line
+            plt.axvline(
+                mean_value,
+                linestyle="--",
+                linewidth=2,
+            )
 
+            # text position
+            ymax = plt.ylim()[1]
+
+            # text colour and vertical position
+            if scenario.lower() == "no subsidy":
+                text_color = "tab:blue"
+                text_y = 0.78
+            else:
+                text_color = "tab:orange"
+                text_y = 0.70
+
+            # shorter label to avoid running outside the plot
+            if scenario.lower() == "no subsidy":
+                label_text = f"Mean (No subsidy) = £{mean_value:,.0f}"
+            else:
+                label_text = f"Mean (With subsidy) = £{mean_value:,.0f}"
+
+            plt.text(
+                0.7,                 # x position inside axes, 0=left, 1=right
+                text_y,               # y position inside axes
+                label_text,
+                transform=plt.gca().transAxes,
+                fontsize=8,
+                color=text_color,
+                ha="left",
+                va="top",
+            )
+
+        plt.title(title)
+        plt.xlabel(xlabel)
+        plt.ylabel("Frequency")
+
+        plt.legend()
+
+        plt.tight_layout()
+        # Figure returned below for Streamlit compatibility.
+
+def plot_monte_carlo_histograms_per_km_by_scenario(df):
+    """Overlay with-subsidy and no-subsidy MC histograms for TCO per km and TCO per km gap."""
+
+    histogram_specs = [
+        ("diesel_tco_per_km", "Monte Carlo: Diesel Truck Discounted TCO per km", "TCO (£/km)"),
+        ("bet_c_tco_per_km", "Monte Carlo: BET-C Discounted TCO per km", "TCO (£/km)"),
+        ("bet_s_tco_per_km", "Monte Carlo: BET-S Discounted TCO per km", "TCO (£/km)"),
+        ("gap_bet_c_diesel_per_km", "Monte Carlo: BET-C - Diesel per km", "TCO Gap (£/km)"),
+        ("gap_bet_s_diesel_per_km", "Monte Carlo: BET-S - Diesel per km", "TCO Gap (£/km)"),
+        ("gap_bet_s_bet_c_per_km", "Monte Carlo: BET-S - BET-C per km", "TCO Gap (£/km)"),
+    ]
+
+    for col, title, xlabel in histogram_specs:
+        plt.figure(figsize=(8, 5))
+
+        if "subsidy_scenario" in df.columns:
+            groups = df.groupby("subsidy_scenario")
+        else:
+            groups = [("Monte Carlo", df)]
+
+        for scenario, sub_df in groups:
+            plt.hist(
+                sub_df[col],
+                bins=20,
+                alpha=0.45,
+                label=scenario,
+            )
+
+            mean_value = sub_df[col].mean()
+
+            plt.axvline(
+                mean_value,
+                linestyle="--",
+                linewidth=2,
+            )
+
+            label_text = f"Mean ({scenario}) = £{mean_value:.3f}/km"
+
+            plt.text(
+                0.65,
+                0.80 if "no" in str(scenario).lower() else 0.70,
+                label_text,
+                transform=plt.gca().transAxes,
+                fontsize=8,
+                ha="left",
+                va="top",
+            )
+
+        plt.title(title)
+        plt.xlabel(xlabel)
+        plt.ylabel("Frequency")
+        plt.legend()
+        plt.tight_layout()
+        return plt.gcf()
 
 def plot_independent_tco_boxplots_by_scenario(df):
     if "subsidy_scenario" not in df.columns:
@@ -4445,9 +6416,3 @@ def pretty_sensitivity_summary(sensitivity_results) -> str:
         )
 
     return "\n".join(lines)
-    
-
-
-
-
-
